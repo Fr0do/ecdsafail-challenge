@@ -1,0 +1,21 @@
+output_dir: artifacts/runs/evox-smoke
+cache:
+  dir: artifacts/cache
+evaluator:
+  version: ecdsa.fail-v1
+  dataset_version: ecdsa.fail-main-5d2f6cf
+target_prog_slots:
+  - patch_id
+evox:
+  population_size: 3
+  generations: 1
+  evaluation_seeds: [0]
+  elite_fraction: 0.67
+  immigrant_fraction: 0.34
+budgets:
+  - name: proxy
+    stage: 1
+    timeout_s: 180
+    max_plans: 0
+    max_judges: 0
+    env_overrides: {}

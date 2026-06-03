@@ -1,0 +1,24 @@
+output_dir: artifacts/runs/evox-compare56-reroll
+cache:
+  dir: artifacts/cache
+evaluator:
+  version: ecdsa.fail-v1
+  dataset_version: ecdsa.fail-main-5d2f6cf-compare56
+target_prog_slots:
+  - patch_id
+  - DIALOG_REROLL
+  - DIALOG_POST_SUB_REROLL
+evox:
+  population_size: 8
+  generations: 10
+  evaluation_seeds: [0]
+  elite_fraction: 0.5
+  immigrant_fraction: 0.25
+budgets:
+  - name: proxy
+    stage: 1
+    timeout_s: 240
+    max_plans: 0
+    max_judges: 0
+    env_overrides:
+      DIALOG_GCD_COMPARE_BITS: 56

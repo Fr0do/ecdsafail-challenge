@@ -1,0 +1,30 @@
+output_dir: artifacts/runs/evox-night
+cache:
+  dir: artifacts/cache
+evaluator:
+  version: ecdsa.fail-v1
+  dataset_version: ecdsa.fail-main-5d2f6cf
+target_prog_slots:
+  - patch_id
+  - DIALOG_GCD_COMPARE_BITS
+  - DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS
+  - DIALOG_GCD_ACTIVE_ITERATIONS
+  - DIALOG_GCD_WIDTH_MARGIN
+  - DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN
+  - DIALOG_GCD_APPLY_CHUNKED_F_CUT
+  - DIALOG_GCD_APPLY_CHUNKED_F_CUT2
+  - DIALOG_REROLL
+  - DIALOG_POST_SUB_REROLL
+evox:
+  population_size: 8
+  generations: 8
+  evaluation_seeds: [0]
+  elite_fraction: 0.5
+  immigrant_fraction: 0.25
+budgets:
+  - name: proxy
+    stage: 1
+    timeout_s: 240
+    max_plans: 0
+    max_judges: 0
+    env_overrides: {}
