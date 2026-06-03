@@ -433,19 +433,105 @@ def _as_float(value: object) -> float:
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = "\n".join(
-            line for line in stripped.splitlines() if not line.strip().startswith("```")
-        ).strip()
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        parsed = json.loads(stripped[start : end + 1])
-    if not isinstance(parsed, dict):
-        raise ValueError("agent output JSON is not an object")
-    return parsed
+    errors: list[str] = []
+    for candidate in _json_candidates(text):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            errors.append(f"{exc.msg} at {exc.pos}")
+            continue
+        if not isinstance(parsed, dict):
+            raise ValueError("agent output JSON is not an object")
+        return parsed
+    detail = "; ".join(errors[-3:]) if errors else "no JSON object candidate found"
+    raise ValueError(f"agent output is not parseable JSON: {detail}")
+
+
+def _json_candidates(text: str) -> list[str]:
+    stripped = _strip_fences(text.strip())
+    candidates = [stripped]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(stripped[start : end + 1])
+    balanced = _balanced_json_prefix(stripped)
+    if balanced:
+        candidates.append(balanced)
+    repaired = _append_missing_json_closers(stripped)
+    if repaired:
+        candidates.append(repaired)
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+    return out
+
+
+def _strip_fences(text: str) -> str:
+    if not text.startswith("```"):
+        return text
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("```")).strip()
+
+
+def _balanced_json_prefix(text: str) -> str:
+    start = text.find("{")
+    if start < 0:
+        return ""
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in "}]":
+            if not stack or stack.pop() != char:
+                return ""
+            if not stack:
+                return text[start : index + 1]
+    return ""
+
+
+def _append_missing_json_closers(text: str) -> str:
+    start = text.find("{")
+    if start < 0:
+        return ""
+    body = text[start:].strip()
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for char in body:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in "}]":
+            if not stack or stack.pop() != char:
+                return ""
+    if not stack or in_string:
+        return ""
+    return body + "".join(reversed(stack))

@@ -1,0 +1,26 @@
+output_dir: artifacts/runs/evox-policy-full-conservative-smoke-v1
+cache:
+  dir: artifacts/cache-policy-full-conservative-smoke-v1
+evaluator:
+  version: ecdsa.fail-v1
+  dataset_version: ecdsa.fail-policy-full-local
+target_prog_slots:
+  - DIALOG_GCD_COMPARE_BITS
+  - DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS
+  - DIALOG_GCD_APPLY_CHUNKED_F_CUT
+  - DIALOG_GCD_APPLY_CHUNKED_F_CUT2
+evox:
+  population_size: 3
+  generations: 1
+  evaluation_seeds: [0]
+  elite_fraction: 0.5
+  immigrant_fraction: 0.5
+budgets:
+  - name: full
+    stage: 2
+    timeout_s: 360
+    max_plans: 0
+    max_judges: 0
+    env_overrides:
+      DIALOG_REROLL: 6458
+      DIALOG_POST_SUB_REROLL: 2553

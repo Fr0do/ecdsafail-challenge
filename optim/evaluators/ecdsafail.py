@@ -29,6 +29,17 @@ INT_ENV_KEYS = {
 }
 
 
+class CommandError(RuntimeError):
+    """Subprocess failure with logs kept for correctness-aware scoring."""
+
+    def __init__(self, prefix: str, returncode: int, stdout: str, stderr: str):
+        super().__init__(f"{prefix} failed with code {returncode}: {stderr[-1000:]}")
+        self.prefix = prefix
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 class EcdsaFailEvaluator:
     """Run build_circuit/eval_circuit and score lower score.json values higher."""
 
@@ -62,7 +73,7 @@ class EcdsaFailEvaluator:
             build_metrics = _parse_build_stdout(build.stdout)
             if mode == "build_only":
                 emitted = build_metrics.get("emitted_ops", 0.0)
-                qubits = build_metrics.get("qubits", 10_000.0)
+                qubits = build_metrics.get("qubits", 1.0)
                 proxy_score = emitted * qubits
                 return self._result(
                     candidate,
@@ -80,16 +91,47 @@ class EcdsaFailEvaluator:
                 )
 
             note = f"evomcp {candidate.candidate_id[:12]}"
-            eval_run = self._run(
-                ["./target/release/eval_circuit", "--note", note],
-                env=env,
-                timeout=budget.timeout_s,
-                bundle=bundle,
-                prefix="eval",
-            )
+            try:
+                eval_run = self._run(
+                    ["./target/release/eval_circuit", "--note", note],
+                    env=env,
+                    timeout=budget.timeout_s,
+                    bundle=bundle,
+                    prefix="eval",
+                )
+            except CommandError as exc:
+                if exc.prefix != "eval":
+                    raise
+                metrics = _parse_eval_stdout(exc.stdout)
+                metrics.update(_parse_eval_header(exc.stdout))
+                emitted = build_metrics.get("emitted_ops", metrics.get("loaded_ops", 0.0))
+                invalid_units = (
+                    metrics.get("classical_mismatches", 0.0)
+                    + metrics.get("phase_garbage_batches", 0.0)
+                    + metrics.get("ancilla_garbage_batches", 0.0)
+                    + 1.0
+                )
+                invalid_score = 1_000_000_000_000.0 + emitted + 100_000_000.0 * invalid_units
+                secondary = {
+                    "valid": 0.0,
+                    "invalid_penalty_score": invalid_score,
+                    "emitted_ops": emitted,
+                    "wall_s": time.monotonic() - started,
+                }
+                secondary.update(metrics)
+                return self._result(
+                    candidate,
+                    budget,
+                    seed,
+                    bundle,
+                    success=True,
+                    primary_score=-invalid_score,
+                    secondary=secondary,
+                )
             metrics = json.loads((self.project_root / "score.json").read_text())["metrics"]
             score = int(json.loads((self.project_root / "score.json").read_text())["score"])
             secondary = {
+                "valid": 1.0,
                 "score": float(score),
                 "toffoli": float(metrics["toffoli"]),
                 "qubits": float(metrics["qubits"]),
@@ -131,7 +173,7 @@ class EcdsaFailEvaluator:
     def _candidate_env(self, candidate: Candidate, budget: Budget) -> dict[str, Any]:
         patch_id = str(candidate.prog_genome.get("patch_id", "current_1434"))
         patch_env = DEFAULT_REGISTRY.resolve_patch_env(patch_id)
-        env_map = materialize_prog_genome(candidate, budget, patch_env=patch_env)
+        env_map = materialize_prog_genome(candidate, budget, base_prog=patch_env)
         env_map.pop("patch_id", None)
         for key in INT_ENV_KEYS & env_map.keys():
             env_map[key] = int(round(float(env_map[key])))
@@ -171,7 +213,7 @@ class EcdsaFailEvaluator:
         (bundle / f"{prefix}.stdout.log").write_text(result.stdout)
         (bundle / f"{prefix}.stderr.log").write_text(result.stderr)
         if result.returncode != 0:
-            raise RuntimeError(f"{prefix} failed with code {result.returncode}: {result.stderr[-1000:]}")
+            raise CommandError(prefix, result.returncode, result.stdout, result.stderr)
         return result
 
     def _result(
@@ -217,6 +259,20 @@ def _parse_eval_stdout(stdout: str) -> dict[str, float]:
         "classical_mismatches": r"classical mismatches\s*:\s*(\d+)",
         "phase_garbage_batches": r"phase-garbage batches\s*:\s*(\d+)",
         "ancilla_garbage_batches": r"ancilla-garbage batches\s*:\s*(\d+)",
+    }
+    out = {}
+    for key, pattern in fields.items():
+        match = re.search(pattern, stdout)
+        if match:
+            out[key] = float(match.group(1))
+    return out
+
+
+def _parse_eval_header(stdout: str) -> dict[str, float]:
+    fields = {
+        "loaded_ops": r"loaded ops\s*:\s*(\d+)",
+        "qubits": r"qubits\s*:\s*(\d+)",
+        "bits": r"bits\s*:\s*(\d+)",
     }
     out = {}
     for key, pattern in fields.items():
