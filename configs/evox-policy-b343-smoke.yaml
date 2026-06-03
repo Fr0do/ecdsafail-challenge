@@ -1,0 +1,27 @@
+output_dir: artifacts/runs/evox-policy-b343-smoke-v2
+cache:
+  dir: artifacts/cache-policy-b343-smoke-v2
+evaluator:
+  version: ecdsa.fail-v1
+  dataset_version: ecdsa.fail-policy-full-local
+target_prog_slots:
+  - patch_id
+evox:
+  population_size: 4
+  generations: 1
+  evaluation_seeds: [0]
+  elite_fraction: 0.5
+  immigrant_fraction: 0.5
+budgets:
+  - name: full
+    stage: 2
+    timeout_s: 360
+    max_plans: 0
+    max_judges: 0
+    env_overrides:
+      DIALOG_GCD_COMPARE_BITS: 57
+      DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS: 19
+      DIALOG_GCD_ACTIVE_ITERATIONS: 395
+      DIALOG_GCD_WIDTH_MARGIN: 26
+      DIALOG_GCD_APPLY_CHUNKED_F_CUT: 124
+      DIALOG_GCD_APPLY_CHUNKED_F_CUT2: 130

@@ -171,7 +171,8 @@ class EcdsaFailEvaluator:
             )
 
     def _candidate_env(self, candidate: Candidate, budget: Budget) -> dict[str, Any]:
-        patch_id = str(candidate.prog_genome.get("patch_id", "current_1434"))
+        requested = materialize_prog_genome(candidate, budget)
+        patch_id = str(requested.get("patch_id", "current_1434"))
         patch_env = DEFAULT_REGISTRY.resolve_patch_env(patch_id)
         env_map = materialize_prog_genome(candidate, budget, base_prog=patch_env)
         env_map.pop("patch_id", None)

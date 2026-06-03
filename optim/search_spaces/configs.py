@@ -67,14 +67,14 @@ for slot in (
         name="DIALOG_REROLL",
         kind=SlotKind.CATEGORICAL,
         default=6458,
-        choices=(0, 1, 3, 7, 17, 37, 40, 52, 118, 2553, 4959, 5983, 6458),
+        choices=(0, 1, 3, 7, 17, 37, 40, 52, 118, 1844, 2553, 4959, 5983, 6458),
         description="Fiat-Shamir reroll knob; seeded with known clean-island values from memory.",
     ),
     ProgSlot(
         name="DIALOG_POST_SUB_REROLL",
         kind=SlotKind.CATEGORICAL,
         default=2553,
-        choices=(0, 1, 10, 13, 28, 44, 51, 56, 118, 2553, 5983),
+        choices=(0, 1, 10, 13, 28, 44, 51, 56, 118, 2553, 3532, 5983),
         description="Second Fiat-Shamir reroll knob; seeded with known clean-island values from memory.",
     ),
 ):
