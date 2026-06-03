@@ -248,6 +248,10 @@ Hard constraints:
 - New files are allowed only as memory/*.md notes, not as Rust implementation files.
 - Rust is required only for final ground-truth scoring; this stage is a cheap
   hypothesis filter.
+- Use GFlowNet-style diversity for reroll and width tasks: prefer a batch of
+  distinct correctness-island hypotheses over tiny variants of one knob.
+- Treat eval_circuit as the terminal reward oracle. Invalid islands may be
+  useful negative samples, but no invalid candidate can be promoted.
 
 Mutation task id: {task_id}
 Goal: {task["goal"]}

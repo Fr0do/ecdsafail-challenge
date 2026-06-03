@@ -1,0 +1,67 @@
+output_dir: artifacts/runs/gflownet-island-smoke-v1
+seed: 17
+baseline_score: 2480196210
+score_scale: 100000.0
+valid_base_reward: 1.0
+invalid_base_reward: 0.02
+learning_rate: 0.7
+temperature: 1.2
+novelty_weight: 0.15
+rounds: 1
+batch_size: 2
+timeout_s: 360
+stage: 2
+fixed_env:
+  DIALOG_GCD_COMPARE_BITS: 57
+  DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS: 19
+  DIALOG_GCD_ACTIVE_ITERATIONS: 395
+  DIALOG_GCD_WIDTH_MARGIN: 26
+  DIALOG_GCD_APPLY_CHUNKED_F_CUT: 124
+  DIALOG_GCD_APPLY_CHUNKED_F_CUT2: 130
+slots:
+  patch_id:
+    - current_1434
+    - b343_sm5_1434
+  DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN:
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+  DIALOG_REROLL:
+    - 0
+    - 1
+    - 3
+    - 7
+    - 17
+    - 37
+    - 40
+    - 52
+    - 118
+    - 1844
+    - 2553
+    - 4959
+    - 5983
+    - 6458
+  DIALOG_POST_SUB_REROLL:
+    - 0
+    - 1
+    - 10
+    - 13
+    - 28
+    - 44
+    - 51
+    - 56
+    - 118
+    - 2553
+    - 3532
+    - 5983
+seed_genomes:
+  - patch_id: current_1434
+    DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN: 7
+    DIALOG_REROLL: 6458
+    DIALOG_POST_SUB_REROLL: 2553
+  - patch_id: b343_sm5_1434
+    DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN: 5
+    DIALOG_REROLL: 1844
+    DIALOG_POST_SUB_REROLL: 3532
