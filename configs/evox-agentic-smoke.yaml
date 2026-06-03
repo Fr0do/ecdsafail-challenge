@@ -1,0 +1,25 @@
+output_dir: artifacts/runs/agentic-smoke
+cache:
+  dir: artifacts/cache-agentic-smoke
+evaluator:
+  version: ecdsa.fail-agentic-plan-v4
+  dataset_version: ecdsa.fail-local
+target_prog_slots:
+  - agent_task_id
+evox:
+  population_size: 3
+  generations: 1
+  evaluation_seeds: [0]
+  elite_fraction: 0.67
+  immigrant_fraction: 0.34
+budgets:
+  - name: proxy
+    stage: 0
+    timeout_s: 45
+    max_plans: 1
+    max_judges: 0
+    env_overrides:
+      AGENT_BACKEND: mock
+      AGENT_MODEL: haiku
+      AGENT_MODE: plan_only
+      AGENT_MAX_USD: 0.0

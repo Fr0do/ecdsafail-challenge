@@ -1,5 +1,8 @@
 /target
 .claude/
+.omc/
+__pycache__/
+*.py[cod]
 score.*
 .autoresearch
 **/.DS_Store

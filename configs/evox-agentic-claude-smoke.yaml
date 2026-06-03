@@ -1,0 +1,25 @@
+output_dir: artifacts/runs/agentic-claude-smoke-v4
+cache:
+  dir: artifacts/cache-agentic-claude-smoke-v4
+evaluator:
+  version: ecdsa.fail-agentic-plan-v4
+  dataset_version: ecdsa.fail-local
+target_prog_slots:
+  - agent_task_id
+evox:
+  population_size: 1
+  generations: 1
+  evaluation_seeds: [0]
+  elite_fraction: 1.0
+  immigrant_fraction: 0.0
+budgets:
+  - name: proxy
+    stage: 0
+    timeout_s: 90
+    max_plans: 1
+    max_judges: 0
+    env_overrides:
+      AGENT_BACKEND: claude_subscription
+      AGENT_MODEL: haiku
+      AGENT_MODE: plan_only
+      AGENT_MAX_USD: 0.03
