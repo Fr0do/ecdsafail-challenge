@@ -1,8 +1,8 @@
-output_dir: artifacts/runs/agentic-claude-smoke-v4
+output_dir: artifacts/runs/agentic-claude-smoke-v7
 cache:
-  dir: artifacts/cache-agentic-claude-smoke-v4
+  dir: artifacts/cache-agentic-claude-smoke-v7
 evaluator:
-  version: ecdsa.fail-agentic-plan-v4
+  version: ecdsa.fail-agentic-plan-v7
   dataset_version: ecdsa.fail-local
 target_prog_slots:
   - agent_task_id
@@ -22,4 +22,5 @@ budgets:
       AGENT_BACKEND: claude_subscription
       AGENT_MODEL: haiku
       AGENT_MODE: plan_only
-      AGENT_MAX_USD: 0.03
+      AGENT_NUM_PROPOSALS: 4
+      AGENT_MAX_USD: 0.05

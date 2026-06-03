@@ -48,7 +48,7 @@ REQUIRED_KEYS = {
 class AgenticEcdsaFailEvaluator:
     """Score local LLM mutation plans before expensive Rust evaluation."""
 
-    version = "ecdsa.fail-agentic-plan-v4"
+    version = "ecdsa.fail-agentic-plan-v7"
 
     def __init__(self, project_root: Path = ROOT):
         self.project_root = project_root
@@ -68,10 +68,11 @@ class AgenticEcdsaFailEvaluator:
         model = str(effective.get("AGENT_MODEL", effective.get("agent_model", "haiku")))
         max_usd = _as_float(effective.get("AGENT_MAX_USD", 0.03))
         mode = str(effective.get("AGENT_MODE", effective.get("agent_mode", "plan_only")))
+        num_proposals = _clamp_int(effective.get("AGENT_NUM_PROPOSALS", 1), default=1, lo=1, hi=8)
         if mode != "plan_only":
             return _penalized(candidate, budget, seed, "only plan_only is enabled", bundle=bundle)
 
-        prompt = _build_prompt(task_id, task, self.project_root)
+        prompt = _build_prompt(task_id, task, self.project_root, num_proposals)
         try:
             agent = run_agent_plan(
                 backend=backend,
@@ -91,11 +92,38 @@ class AgenticEcdsaFailEvaluator:
                     f"agent failed rc={agent.returncode}: {agent.stderr[-500:] or agent.text[-500:]}",
                     bundle=bundle,
                 )
-            plan = extract_json_object(agent.text)
-            (bundle / "plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False))
-            metrics = _score_plan(plan, task_id, self.project_root)
+            parsed = extract_json_object(agent.text)
+            (bundle / "agent.parsed.json").write_text(json.dumps(parsed, indent=2, ensure_ascii=False))
+            proposals = _normalise_proposals(parsed)
+            if not proposals:
+                return _penalized(candidate, budget, seed, "agent returned no usable proposals", bundle=bundle)
+
+            scored: list[dict[str, Any]] = []
+            for index, proposal in enumerate(proposals):
+                proposal_metrics = _score_plan(proposal, task_id, self.project_root)
+                scored.append(
+                    {
+                        "index": index,
+                        "score": proposal_metrics["plan_score"],
+                        "metrics": proposal_metrics,
+                        "plan": proposal,
+                    }
+                )
+            best = max(scored, key=lambda item: float(item["score"]))
+            best_plan = best["plan"]
+            (bundle / "proposals.json").write_text(json.dumps(scored, indent=2, ensure_ascii=False))
+            (bundle / "plan.json").write_text(json.dumps(best_plan, indent=2, ensure_ascii=False))
+
+            metrics = dict(best["metrics"])
+            proposal_count = len(scored)
             metrics.update(
                 {
+                    "proposal_count": float(proposal_count),
+                    "requested_proposal_count": float(num_proposals),
+                    "best_proposal_index": float(best["index"]),
+                    "mean_proposal_score": sum(float(item["score"]) for item in scored) / proposal_count,
+                    "model_calls_per_proposal": 1.0 / proposal_count,
+                    "agent_usd_per_proposal": agent.usd / proposal_count,
                     "wall_s": time.monotonic() - started,
                     "agent_wall_s": agent.wall_s,
                     "agent_usd": agent.usd,
@@ -128,8 +156,8 @@ class AgenticEcdsaFailEvaluator:
             return _penalized(candidate, budget, seed, str(exc), bundle=bundle)
 
 
-def _build_prompt(task_id: str, task: dict[str, str], project_root: Path) -> str:
-    schema = {
+def _build_prompt(task_id: str, task: dict[str, str], project_root: Path, num_proposals: int) -> str:
+    proposal_schema = {
         "hypothesis": "one sentence",
         "edit_plan": ["ordered concrete edit or experiment"],
         "allowed_files": ["path"],
@@ -138,6 +166,7 @@ def _build_prompt(task_id: str, task: dict[str, str], project_root: Path) -> str
         "failure_modes": ["what would falsify this"],
         "risk_controls": ["deterministic guard"],
     }
+    schema = {"proposals": [proposal_schema]}
     return f"""
 Return only JSON with this schema:
 {json.dumps(schema, indent=2)}
@@ -166,15 +195,34 @@ Allowed surface hint: {task["surface"]}
 Existing relevant files:
 {_compact_file_context(project_root, ("src/point_add", "src/bin", "configs"))}
 
-Design one narrow mutation or experiment. It must be falsifiable by the listed
-commands and should name the expected qubit/Toffoli/score direction. Do not
-name files that are absent from the existing relevant-file list unless the plan
-explicitly creates them.
+Hard output budget:
+- Return minified JSON, with no markdown and no commentary.
+- Generate exactly {num_proposals} diverse proposals.
+- Every string must be at most 160 characters.
+- Each proposal must use 2-3 edit_plan items, at most 3 allowed_files,
+  exactly 3 eval_commands, at most 2 failure_modes, and at most 2 risk_controls.
+
+Each proposal must be one narrow mutation or experiment. It must be falsifiable
+by the listed commands and should name the expected qubit/Toffoli/score
+direction. Keep proposals non-overlapping so a local evaluator can pick the best
+one. Do not name files that are absent from the existing relevant-file list
+unless the plan explicitly creates them.
 Prefer these ground-truth commands:
 - cargo build --release --locked --bin build_circuit --bin eval_circuit
 - TRACE_PEAK=1 ./target/release/build_circuit
 - ./target/release/eval_circuit --note agentic
 """.strip()
+
+
+def _normalise_proposals(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = parsed.get("proposals")
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    if isinstance(parsed.get("proposal"), dict):
+        return [parsed["proposal"]]
+    if REQUIRED_KEYS & set(parsed):
+        return [parsed]
+    return []
 
 
 def _score_plan(plan: dict[str, Any], task_id: str, project_root: Path) -> dict[str, float]:
@@ -244,9 +292,7 @@ def _absent_allowed_files(plan: dict[str, Any], project_root: Path) -> list[str]
         path = str(raw)
         if "*" in path or path.endswith("/") or path.startswith("environment"):
             continue
-        if path.endswith(".md") and (
-            f"create {path.lower()}" in plan_text or f"add {path.lower()}" in plan_text
-        ):
+        if path.endswith(".md") and path.lower() in plan_text and ("create" in plan_text or "add" in plan_text):
             continue
         if not (project_root / path).exists():
             absent.append(path)
@@ -258,6 +304,14 @@ def _as_float(value: object) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _clamp_int(value: object, *, default: int, lo: int, hi: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(lo, min(hi, parsed))
 
 
 def _penalized(

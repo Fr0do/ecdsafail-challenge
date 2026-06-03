@@ -53,7 +53,7 @@ def run_agent_plan(
 
     if backend == "mock":
         started = time.monotonic()
-        text = json.dumps(
+        proposals = [
             {
                 "hypothesis": "Reduce peak qubits by shortening a live range, not by weakening checks.",
                 "edit_plan": [
@@ -74,6 +74,41 @@ def run_agent_plan(
                 ],
                 "risk_controls": ["compare score.json", "reject score tampering", "preserve 9024-shot eval"],
             },
+            {
+                "hypothesis": "A primitive-cost edit should only be accepted if eval_circuit stays clean.",
+                "edit_plan": [
+                    "Inspect a single high-frequency Toffoli primitive in point_add.",
+                    "Replace it with an equivalent lower-Toffoli sequence behind a local guard.",
+                ],
+                "allowed_files": ["src/point_add/primitive_costs.rs", "src/point_add/mod.rs"],
+                "eval_commands": [
+                    "cargo build --release --locked --bin build_circuit --bin eval_circuit",
+                    "TRACE_PEAK=1 ./target/release/build_circuit",
+                    "./target/release/eval_circuit --note agentic-toffoli",
+                ],
+                "expected_score_effect": "Reduce Toffoli count while keeping peak qubits and garbage checks clean.",
+                "failure_modes": ["Toffoli count unchanged", "phase garbage", "ancilla garbage"],
+                "risk_controls": ["diff score.json", "reject if eval_circuit reports any mismatch"],
+            },
+            {
+                "hypothesis": "An explicit guardrail can reject phase garbage before expensive reroll scoring.",
+                "edit_plan": [
+                    "Add a memory note describing the expected clean-island invariant.",
+                    "Run build_circuit and eval_circuit with the note tag before any patch promotion.",
+                ],
+                "allowed_files": ["src/point_add/memory/agentic_guard.md", "src/bin/eval_circuit.rs"],
+                "eval_commands": [
+                    "cargo build --release --locked --bin build_circuit --bin eval_circuit",
+                    "TRACE_PEAK=1 ./target/release/build_circuit",
+                    "./target/release/eval_circuit --note agentic-guard",
+                ],
+                "expected_score_effect": "No direct score change; fewer bad candidates reach expensive scoring.",
+                "failure_modes": ["guard note is not actionable", "eval_circuit misses phase garbage"],
+                "risk_controls": ["do not change score.json semantics", "preserve strict eval checks"],
+            },
+        ]
+        text = json.dumps(
+            {"proposals": proposals},
             indent=2,
         )
         return AgentRunResult(
@@ -130,6 +165,8 @@ def _run_claude(
             prompt,
             "--model",
             model,
+            "--effort",
+            "low",
             "--system-prompt",
             COMPACT_SYSTEM_PROMPT,
             "--disable-slash-commands",
@@ -140,6 +177,8 @@ def _run_claude(
             "json",
             "--max-turns",
             "3",
+            "--prompt-suggestions",
+            "false",
             "--no-session-persistence",
         ]
     )

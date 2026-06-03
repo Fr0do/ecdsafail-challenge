@@ -9,6 +9,7 @@ mutation plans; deterministic Rust scoring remains the final gate.
 ```bash
 claude -p "$PROMPT" \
   --model haiku \
+  --effort low \
   --system-prompt "$COMPACT_SYSTEM_PROMPT" \
   --tools "" \
   --disable-slash-commands \
@@ -16,7 +17,8 @@ claude -p "$PROMPT" \
   --setting-sources user \
   --output-format json \
   --max-turns 3 \
-  --max-budget-usd 0.03 \
+  --max-budget-usd 0.05 \
+  --prompt-suggestions false \
   --no-session-persistence
 ```
 
@@ -26,9 +28,12 @@ automation only.
 
 ## First-Stage Loop
 
-Stage 0 is `plan_only`: the model returns a JSON hypothesis with allowed files,
-commands, expected score effect, and failure controls. The evaluator scores this
-contract before any expensive `cargo` run.
+Stage 0 is `plan_only`: the model returns a compact JSON batch of hypotheses
+with allowed files, commands, expected score effects, and failure controls. The
+evaluator scores every proposal locally before any expensive `cargo` run, writes
+the full batch to `proposals.json`, writes the selected winner to `plan.json`,
+and records `proposal_count`, `model_calls_per_proposal`, and
+`agent_usd_per_proposal`.
 
 The later patch-eval stage should run in isolated worktrees and gate patches
 with:
