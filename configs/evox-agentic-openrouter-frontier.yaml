@@ -1,0 +1,27 @@
+output_dir: artifacts/runs/agentic-openrouter-frontier-v1
+cache:
+  dir: artifacts/cache-agentic-openrouter-frontier-v1
+evaluator:
+  version: ecdsa.fail-agentic-plan-v7
+  dataset_version: ecdsa.fail-local
+target_prog_slots:
+  - agent_task_id
+  - agent_model_lane
+evox:
+  population_size: 6
+  generations: 2
+  evaluation_seeds: [0]
+  elite_fraction: 0.5
+  immigrant_fraction: 0.34
+budgets:
+  - name: proxy
+    stage: 0
+    timeout_s: 120
+    max_plans: 1
+    max_judges: 0
+    env_overrides:
+      AGENT_BACKEND: openrouter
+      AGENT_MODE: plan_only
+      AGENT_NUM_PROPOSALS: 4
+      AGENT_OPENROUTER_API_KEY_FILE: /Users/mkurkin/experiments/projects/openrouter.txt
+      AGENT_MAX_USD: 0.03

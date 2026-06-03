@@ -34,6 +34,45 @@ TASKS: dict[str, dict[str, str]] = {
     },
 }
 
+OPENROUTER_MODEL_LANES: dict[str, dict[str, float | int | str]] = {
+    "cheap_fast": {
+        "model": "deepseek/deepseek-v4-flash",
+        "prompt_usd_per_token": 0.0000000983,
+        "completion_usd_per_token": 0.0000001966,
+        "max_tokens": 1536,
+    },
+    "cheap_explorer": {
+        "model": "tencent/hy3-preview",
+        "prompt_usd_per_token": 0.000000063,
+        "completion_usd_per_token": 0.00000021,
+        "max_tokens": 1536,
+    },
+    "best_value": {
+        "model": "xiaomi/mimo-v2.5-pro",
+        "prompt_usd_per_token": 0.000000435,
+        "completion_usd_per_token": 0.00000087,
+        "max_tokens": 2048,
+    },
+    "strong": {
+        "model": "deepseek/deepseek-v4-pro",
+        "prompt_usd_per_token": 0.000000435,
+        "completion_usd_per_token": 0.00000087,
+        "max_tokens": 2048,
+    },
+    "max_quality": {
+        "model": "qwen/qwen3.7-max",
+        "prompt_usd_per_token": 0.00000125,
+        "completion_usd_per_token": 0.00000375,
+        "max_tokens": 2048,
+    },
+    "long_context": {
+        "model": "minimax/minimax-m3",
+        "prompt_usd_per_token": 0.0000003,
+        "completion_usd_per_token": 0.0000012,
+        "max_tokens": 2048,
+    },
+}
+
 REQUIRED_KEYS = {
     "hypothesis",
     "edit_plan",
@@ -66,9 +105,13 @@ class AgenticEcdsaFailEvaluator:
         task = TASKS.get(task_id, TASKS["reduce_peak_qubits"])
         backend = str(effective.get("AGENT_BACKEND", effective.get("agent_backend", "mock")))
         model = str(effective.get("AGENT_MODEL", effective.get("agent_model", "haiku")))
+        model_lane = str(effective.get("AGENT_MODEL_LANE", effective.get("agent_model_lane", "best_value")))
         max_usd = _as_float(effective.get("AGENT_MAX_USD", 0.03))
         mode = str(effective.get("AGENT_MODE", effective.get("agent_mode", "plan_only")))
         num_proposals = _clamp_int(effective.get("AGENT_NUM_PROPOSALS", 1), default=1, lo=1, hi=8)
+        openrouter_route = _resolve_openrouter_route(model, model_lane)
+        if backend == "openrouter":
+            model = str(openrouter_route["model"])
         if mode != "plan_only":
             return _penalized(candidate, budget, seed, "only plan_only is enabled", bundle=bundle)
 
@@ -82,6 +125,20 @@ class AgenticEcdsaFailEvaluator:
                 artifact_dir=bundle,
                 timeout_s=budget.timeout_s,
                 max_usd=max_usd,
+                openrouter_api_key_file=str(
+                    effective.get(
+                        "AGENT_OPENROUTER_API_KEY_FILE",
+                        "/Users/mkurkin/experiments/projects/openrouter.txt",
+                    )
+                ),
+                openrouter_max_tokens=_clamp_int(
+                    effective.get("AGENT_OPENROUTER_MAX_TOKENS", openrouter_route["max_tokens"]),
+                    default=int(openrouter_route["max_tokens"]),
+                    lo=512,
+                    hi=8192,
+                ),
+                openrouter_prompt_usd_per_token=float(openrouter_route["prompt_usd_per_token"]),
+                openrouter_completion_usd_per_token=float(openrouter_route["completion_usd_per_token"]),
             )
             (bundle / "agent.raw.json").write_text(json.dumps(agent.raw, indent=2, default=str))
             if not agent.ok:
@@ -223,6 +280,13 @@ def _normalise_proposals(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     if REQUIRED_KEYS & set(parsed):
         return [parsed]
     return []
+
+
+def _resolve_openrouter_route(model: str, lane: str) -> dict[str, float | int | str]:
+    route = dict(OPENROUTER_MODEL_LANES.get(lane, OPENROUTER_MODEL_LANES["best_value"]))
+    if "/" in model:
+        route["model"] = model
+    return route
 
 
 def _score_plan(plan: dict[str, Any], task_id: str, project_root: Path) -> dict[str, float]:

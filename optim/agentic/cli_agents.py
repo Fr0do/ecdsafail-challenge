@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib import error, request
 
 
 COMPACT_SYSTEM_PROMPT = (
@@ -47,6 +49,10 @@ def run_agent_plan(
     max_usd: float | None = None,
     tools: str = "",
     allowed_tools: str = "",
+    openrouter_api_key_file: str | None = None,
+    openrouter_max_tokens: int = 2048,
+    openrouter_prompt_usd_per_token: float = 0.0,
+    openrouter_completion_usd_per_token: float = 0.0,
 ) -> AgentRunResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / "prompt.txt").write_text(prompt)
@@ -141,6 +147,19 @@ def run_agent_plan(
             artifact_dir=artifact_dir,
             timeout_s=timeout_s,
         )
+    if backend == "openrouter":
+        return _run_openrouter(
+            model=model,
+            prompt=prompt,
+            cwd=cwd,
+            artifact_dir=artifact_dir,
+            timeout_s=timeout_s,
+            system_prompt=COMPACT_SYSTEM_PROMPT,
+            api_key_file=openrouter_api_key_file,
+            max_tokens=openrouter_max_tokens,
+            prompt_usd_per_token=openrouter_prompt_usd_per_token,
+            completion_usd_per_token=openrouter_completion_usd_per_token,
+        )
     raise ValueError(f"unknown backend: {backend}")
 
 
@@ -231,6 +250,108 @@ def _run_codex(*, model: str, prompt: str, cwd: Path, artifact_dir: Path, timeou
     return AgentRunResult("codex", model, proc.returncode, proc.stdout, proc.stderr, text, wall_s)
 
 
+def _run_openrouter(
+    *,
+    model: str,
+    prompt: str,
+    cwd: Path,
+    artifact_dir: Path,
+    timeout_s: int,
+    system_prompt: str,
+    api_key_file: str | None,
+    max_tokens: int,
+    prompt_usd_per_token: float,
+    completion_usd_per_token: float,
+) -> AgentRunResult:
+    api_key = _read_openrouter_key(api_key_file)
+    if not api_key:
+        return AgentRunResult(
+            backend="openrouter",
+            model=model,
+            returncode=1,
+            stdout="",
+            stderr="missing OPENROUTER_API_KEY or readable API key file",
+            text="",
+            wall_s=0.0,
+        )
+
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "max_tokens": max(256, int(max_tokens)),
+    }
+    (artifact_dir / "agent.request.json").write_text(
+        json.dumps({**body, "messages": "[redacted prompt written separately]"}, indent=2)
+    )
+    req = request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/Fr0do/ecdsafail-challenge",
+            "X-Title": "ecdsafail-challenge-evomcp",
+        },
+        method="POST",
+    )
+    started = time.monotonic()
+    try:
+        with request.urlopen(req, timeout=timeout_s) as response:
+            stdout = response.read().decode("utf-8", errors="replace")
+            returncode = 0
+            stderr = ""
+    except error.HTTPError as exc:
+        stdout = exc.read().decode("utf-8", errors="replace")
+        returncode = 1
+        stderr = f"HTTP {exc.code}: {exc.reason}"
+    except error.URLError as exc:
+        stdout = ""
+        returncode = 1
+        stderr = str(exc.reason)
+    wall_s = time.monotonic() - started
+    (artifact_dir / "agent.stdout.log").write_text(stdout)
+    (artifact_dir / "agent.stderr.log").write_text(stderr)
+
+    raw: dict[str, Any] = {}
+    text = stdout.strip()
+    try:
+        raw = json.loads(stdout)
+        choice = (raw.get("choices") or [{}])[0]
+        message = choice.get("message") if isinstance(choice, dict) else {}
+        content = message.get("content") if isinstance(message, dict) else ""
+        if isinstance(content, list):
+            text = "".join(str(part.get("text", part)) for part in content)
+        else:
+            text = str(content or "")
+    except (json.JSONDecodeError, IndexError, TypeError):
+        raw = {}
+
+    usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+    input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    usd = _as_float(usage.get("cost") or raw.get("cost"))
+    if usd == 0.0 and (prompt_usd_per_token or completion_usd_per_token):
+        usd = input_tokens * prompt_usd_per_token + output_tokens * completion_usd_per_token
+    return AgentRunResult(
+        backend="openrouter",
+        model=model,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        text=text.strip(),
+        wall_s=wall_s,
+        usd=usd,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        raw=raw,
+    )
+
+
 def _run_json_command(cmd: list[str], *, cwd: Path, artifact_dir: Path, timeout_s: int) -> AgentRunResult:
     started = time.monotonic()
     proc = subprocess.run(
@@ -268,6 +389,27 @@ def _run_json_command(cmd: list[str], *, cwd: Path, artifact_dir: Path, timeout_
         output_tokens=int(usage.get("output_tokens") or 0),
         raw=raw,
     )
+
+
+def _read_openrouter_key(api_key_file: str | None) -> str:
+    env_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    candidates = []
+    if api_key_file:
+        candidates.append(Path(api_key_file).expanduser())
+    candidates.append(Path("/Users/mkurkin/experiments/projects/openrouter.txt"))
+    for path in candidates:
+        if path.exists():
+            return path.read_text().strip()
+    return ""
+
+
+def _as_float(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
