@@ -21,6 +21,7 @@ for slot in (
             "haiku",
             "sonnet",
             "default",
+            "gpt-5.3-codex-spark",
             "qwen/qwen3.7-max",
             "xiaomi/mimo-v2.5-pro",
             "deepseek/deepseek-v4-pro",

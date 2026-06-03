@@ -1,0 +1,28 @@
+output_dir: artifacts/runs/agentic-codex-spark-v2
+cache:
+  dir: artifacts/cache-agentic-codex-spark-v2
+evaluator:
+  version: ecdsa.fail-agentic-plan-v7
+  dataset_version: ecdsa.fail-local
+target_prog_slots:
+  - agent_task_id
+evox:
+  population_size: 4
+  generations: 2
+  evaluation_seeds: [0]
+  elite_fraction: 0.5
+  immigrant_fraction: 0.25
+budgets:
+  - name: proxy
+    stage: 0
+    timeout_s: 240
+    max_plans: 1
+    max_judges: 0
+    env_overrides:
+      AGENT_BACKEND: codex
+      AGENT_MODEL: gpt-5.3-codex-spark
+      AGENT_CODEX_REASONING_EFFORT: medium
+      AGENT_CODEX_SERVICE_TIER: fast
+      AGENT_CODEX_FAST_MODE: "1"
+      AGENT_MODE: plan_only
+      AGENT_NUM_PROPOSALS: 4

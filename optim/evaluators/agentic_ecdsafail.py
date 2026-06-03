@@ -139,6 +139,9 @@ class AgenticEcdsaFailEvaluator:
                 ),
                 openrouter_prompt_usd_per_token=float(openrouter_route["prompt_usd_per_token"]),
                 openrouter_completion_usd_per_token=float(openrouter_route["completion_usd_per_token"]),
+                codex_reasoning_effort=str(effective.get("AGENT_CODEX_REASONING_EFFORT", "low")),
+                codex_service_tier=str(effective.get("AGENT_CODEX_SERVICE_TIER", "")),
+                codex_fast_mode=_truthy(effective.get("AGENT_CODEX_FAST_MODE", False)),
             )
             (bundle / "agent.raw.json").write_text(json.dumps(agent.raw, indent=2, default=str))
             if not agent.ok:
@@ -368,6 +371,10 @@ def _as_float(value: object) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "fast"}
 
 
 def _clamp_int(value: object, *, default: int, lo: int, hi: int) -> int:

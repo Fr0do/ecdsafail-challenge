@@ -53,6 +53,9 @@ def run_agent_plan(
     openrouter_max_tokens: int = 2048,
     openrouter_prompt_usd_per_token: float = 0.0,
     openrouter_completion_usd_per_token: float = 0.0,
+    codex_reasoning_effort: str = "low",
+    codex_service_tier: str = "",
+    codex_fast_mode: bool = False,
 ) -> AgentRunResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / "prompt.txt").write_text(prompt)
@@ -146,6 +149,9 @@ def run_agent_plan(
             cwd=cwd,
             artifact_dir=artifact_dir,
             timeout_s=timeout_s,
+            reasoning_effort=codex_reasoning_effort,
+            service_tier=codex_service_tier,
+            fast_mode=codex_fast_mode,
         )
     if backend == "openrouter":
         return _run_openrouter(
@@ -212,13 +218,23 @@ def _run_claude(
     return _run_json_command(cmd, cwd=cwd, artifact_dir=artifact_dir, timeout_s=timeout_s)
 
 
-def _run_codex(*, model: str, prompt: str, cwd: Path, artifact_dir: Path, timeout_s: int) -> AgentRunResult:
+def _run_codex(
+    *,
+    model: str,
+    prompt: str,
+    cwd: Path,
+    artifact_dir: Path,
+    timeout_s: int,
+    reasoning_effort: str,
+    service_tier: str,
+    fast_mode: bool,
+) -> AgentRunResult:
     last_message = artifact_dir / "codex-last-message.txt"
     cmd = [
         "codex",
         "exec",
         "--config",
-        'model_reasoning_effort="low"',
+        f'model_reasoning_effort="{reasoning_effort}"',
         "--sandbox",
         "read-only",
         "--cd",
@@ -232,6 +248,10 @@ def _run_codex(*, model: str, prompt: str, cwd: Path, artifact_dir: Path, timeou
         str(last_message),
         prompt,
     ]
+    if service_tier:
+        cmd[2:2] = ["--config", f'service_tier="{service_tier}"']
+    if fast_mode:
+        cmd[2:2] = ["--enable", "fast_mode"]
     if model and model not in {"default", "codex-default"}:
         cmd[2:2] = ["--model", model]
     started = time.monotonic()
