@@ -87,7 +87,7 @@ REQUIRED_KEYS = {
 class AgenticEcdsaFailEvaluator:
     """Score local LLM mutation plans before expensive Rust evaluation."""
 
-    version = "ecdsa.fail-agentic-plan-v7"
+    version = "ecdsa.fail-agentic-plan-v8"
 
     def __init__(self, project_root: Path = ROOT):
         self.project_root = project_root
@@ -109,13 +109,36 @@ class AgenticEcdsaFailEvaluator:
         max_usd = _as_float(effective.get("AGENT_MAX_USD", 0.03))
         mode = str(effective.get("AGENT_MODE", effective.get("agent_mode", "plan_only")))
         num_proposals = _clamp_int(effective.get("AGENT_NUM_PROPOSALS", 1), default=1, lo=1, hi=8)
+        context_profile = str(effective.get("agent_context_profile", "balanced"))
+        strategy_profile = str(effective.get("agent_strategy_profile", "narrow_patch"))
+        prior_id = str(effective.get("agent_prior_id", "v4_pso"))
         openrouter_route = _resolve_openrouter_route(model, model_lane)
         if backend == "openrouter":
             model = str(openrouter_route["model"])
         if mode != "plan_only":
             return _penalized(candidate, budget, seed, "only plan_only is enabled", bundle=bundle)
 
-        prompt = _build_prompt(task_id, task, self.project_root, num_proposals)
+        (bundle / "prompt_profile.json").write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "context_profile": context_profile,
+                    "strategy_profile": strategy_profile,
+                    "prior_id": prior_id,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        prompt = _build_prompt(
+            task_id,
+            task,
+            self.project_root,
+            num_proposals,
+            context_profile=context_profile,
+            strategy_profile=strategy_profile,
+            prior_id=prior_id,
+        )
         try:
             agent = run_agent_plan(
                 backend=backend,
@@ -160,7 +183,14 @@ class AgenticEcdsaFailEvaluator:
 
             scored: list[dict[str, Any]] = []
             for index, proposal in enumerate(proposals):
-                proposal_metrics = _score_plan(proposal, task_id, self.project_root)
+                proposal_metrics = _score_plan(
+                    proposal,
+                    task_id,
+                    self.project_root,
+                    context_profile=context_profile,
+                    strategy_profile=strategy_profile,
+                    prior_id=prior_id,
+                )
                 scored.append(
                     {
                         "index": index,
@@ -216,7 +246,16 @@ class AgenticEcdsaFailEvaluator:
             return _penalized(candidate, budget, seed, str(exc), bundle=bundle)
 
 
-def _build_prompt(task_id: str, task: dict[str, str], project_root: Path, num_proposals: int) -> str:
+def _build_prompt(
+    task_id: str,
+    task: dict[str, str],
+    project_root: Path,
+    num_proposals: int,
+    *,
+    context_profile: str,
+    strategy_profile: str,
+    prior_id: str,
+) -> str:
     proposal_schema = {
         "hypothesis": "one sentence",
         "edit_plan": ["ordered concrete edit or experiment"],
@@ -256,6 +295,12 @@ Hard constraints:
 Mutation task id: {task_id}
 Goal: {task["goal"]}
 Allowed surface hint: {task["surface"]}
+Context profile: {context_profile}
+{_context_profile_text(context_profile)}
+Strategy profile: {strategy_profile}
+{_strategy_profile_text(strategy_profile)}
+Seed prior: {prior_id}
+{_prior_text(prior_id)}
 Existing relevant files:
 {_compact_file_context(project_root, ("src/point_add", "src/bin", "configs"))}
 
@@ -278,6 +323,77 @@ Prefer these ground-truth commands:
 """.strip()
 
 
+def _context_profile_text(profile: str) -> str:
+    texts = {
+        "balanced": (
+            "Use a balanced view of source files, memory notes, and the current "
+            "policy-loop result. Prefer ideas that can be falsified in one local run."
+        ),
+        "leaderboard_top": (
+            "Use the public leaderboard graph. Top notes include "
+            "commit_notes/143-d2b4bcf-44bc2a4.md: compare57, reroll 3/118, "
+            "1446q, 1736185T; and commit_notes/142-8ab5f90-53cab17.md. "
+            "Look for transplantable route/reroll structure, not score copying."
+        ),
+        "structural_notes": (
+            "Use structural notes such as cost_model.md, structural_sota_plan, "
+            "scratch600_ground_up, and lit_tricks.md. Prefer algebraic or "
+            "lifetime-route changes over pure reroll tuning."
+        ),
+        "local_trace": (
+            "Use local measured pressure points: 1434q baseline, dialog-GCD "
+            "special chunks, terminal reacquire sites, quotient/product pair "
+            "blocks, and the v4 PSO reroll prior."
+        ),
+    }
+    return texts.get(profile, texts["balanced"])
+
+
+def _strategy_profile_text(profile: str) -> str:
+    texts = {
+        "narrow_patch": (
+            "Produce narrow implementation edits: one file-local mechanism, one "
+            "expected metric movement, and direct build/eval commands."
+        ),
+        "experiment_matrix": (
+            "Produce compact parameter sweeps or small experiment matrices. "
+            "Name exact knobs, candidate values, and promotion/rejection rules."
+        ),
+        "negative_sample": (
+            "Exploit invalid islands as information. Propose tests that identify "
+            "phase, ancilla, or classical failure boundaries without promoting them."
+        ),
+        "source_route": (
+            "Prefer source-level route changes that create a new clean island, "
+            "then retune rerolls around the changed emitted op stream."
+        ),
+    }
+    return texts.get(profile, texts["narrow_patch"])
+
+
+def _prior_text(prior_id: str) -> str:
+    texts = {
+        "v4_pso": (
+            "Start from policy-loop v4: top-10 leaderboard commit prior plus "
+            "PSO/EMA over full-eval winners; avoid letting build-only proxy traps "
+            "drive the final choice."
+        ),
+        "b343_top": (
+            "Start from b343_sm5_1434: valid score 2479548042 at 1434q and "
+            "1729113T. Try to preserve that clean island while reducing T or peak."
+        ),
+        "compare56": (
+            "Challenge the compare-width frontier: compare57 is known clean on "
+            "one 1446q public route; compare56 needs a new reroll/route island."
+        ),
+        "underflow_clean": (
+            "Investigate whether existing underflow/borrow information can remove "
+            "late controlled comparator or cleanup work without changing semantics."
+        ),
+    }
+    return texts.get(prior_id, texts["v4_pso"])
+
+
 def _normalise_proposals(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     raw = parsed.get("proposals")
     if isinstance(raw, list):
@@ -296,7 +412,15 @@ def _resolve_openrouter_route(model: str, lane: str) -> dict[str, float | int | 
     return route
 
 
-def _score_plan(plan: dict[str, Any], task_id: str, project_root: Path) -> dict[str, float]:
+def _score_plan(
+    plan: dict[str, Any],
+    task_id: str,
+    project_root: Path,
+    *,
+    context_profile: str,
+    strategy_profile: str,
+    prior_id: str,
+) -> dict[str, float]:
     score = 0.0
     missing = REQUIRED_KEYS - set(plan)
     if not missing:
@@ -314,6 +438,27 @@ def _score_plan(plan: dict[str, Any], task_id: str, project_root: Path) -> dict[
         "phase_garbage_guard": ("phase", "ancilla", "guard"),
     }[task_id]
     score += 5.0 * sum(token in text for token in task_tokens)
+    strategy_tokens = {
+        "narrow_patch": ("narrow", "local", "edit"),
+        "experiment_matrix": ("sweep", "matrix", "values"),
+        "negative_sample": ("invalid", "reject", "failure"),
+        "source_route": ("route", "lifetime", "stream"),
+    }
+    score += 3.0 * sum(token in text for token in strategy_tokens.get(strategy_profile, ()))
+    prior_tokens = {
+        "v4_pso": ("pso", "ema", "reroll"),
+        "b343_top": ("b343", "1434", "1729113"),
+        "compare56": ("compare56", "56", "compare"),
+        "underflow_clean": ("underflow", "borrow", "cleanup"),
+    }
+    score += 3.0 * sum(token in text for token in prior_tokens.get(prior_id, ()))
+    context_tokens = {
+        "leaderboard_top": ("leaderboard", "commit", "transplant"),
+        "structural_notes": ("algebra", "structural", "lifetime"),
+        "local_trace": ("trace", "reacquire", "chunk"),
+        "balanced": ("falsifiable", "eval_circuit", "score"),
+    }
+    score += 2.0 * sum(token in text for token in context_tokens.get(context_profile, ()))
     forbidden = ("score.json", "skip eval", "disable", "always true", "git push", "rm ")
     if any(token in text for token in forbidden):
         score -= 30.0
