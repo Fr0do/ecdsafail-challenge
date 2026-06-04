@@ -110,6 +110,10 @@ def main() -> None:
     seen_full: set[str] = set()
     proxy_archive: list[ProxyRecord] = []
     full_archive: list[FullRecord] = []
+    best_valid_score: float | None = None
+    full_at_best_valid = 0
+    rounds_without_valid_improvement = 0
+    stopped_reason: str | None = None
     started = time.monotonic()
 
     try:
@@ -265,7 +269,38 @@ def main() -> None:
                     }
                 )
 
+            current_best_valid = _best_valid_score(full_archive)
+            if current_best_valid is not None and (
+                best_valid_score is None or current_best_valid < best_valid_score
+            ):
+                best_valid_score = current_best_valid
+                full_at_best_valid = len(full_archive)
+                rounds_without_valid_improvement = 0
+            else:
+                rounds_without_valid_improvement += 1
+
+            stopped_reason = _early_stop_reason(
+                cfg,
+                round_index=round_index,
+                rounds_without_valid_improvement=rounds_without_valid_improvement,
+                full_without_valid_improvement=len(full_archive) - full_at_best_valid,
+            )
+            if stopped_reason:
+                event = {
+                    "type": "early_stop",
+                    "generation": round_index,
+                    "reason": stopped_reason,
+                    "best_valid_score": best_valid_score,
+                    "rounds_without_valid_improvement": rounds_without_valid_improvement,
+                    "full_without_valid_improvement": len(full_archive) - full_at_best_valid,
+                }
+                _append_jsonl(events_path, event)
+                if program_db:
+                    program_db.record_event(event)
+                break
+
         summary = _summary(full_archive, proxy_archive, started)
+        summary["stopped_reason"] = stopped_reason
         (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
         print("SUMMARY", json.dumps(summary, sort_keys=True, default=str))
     finally:
@@ -582,6 +617,35 @@ def _summary(full_archive: list[FullRecord], proxy_archive: list[ProxyRecord], s
         "best_full": _full_item_dict(best_full) if best_full else None,
         "best_valid": _full_item_dict(best_valid) if best_valid else None,
     }
+
+
+def _best_valid_score(full_archive: list[FullRecord]) -> float | None:
+    scores = [
+        float(item.result.secondary_scores["score"])
+        for item in full_archive
+        if item.result.secondary_scores.get("valid", 0.0) >= 1.0
+        and "score" in item.result.secondary_scores
+    ]
+    return min(scores) if scores else None
+
+
+def _early_stop_reason(
+    cfg: dict[str, Any],
+    *,
+    round_index: int,
+    rounds_without_valid_improvement: int,
+    full_without_valid_improvement: int,
+) -> str | None:
+    min_rounds = int(cfg.get("early_stop_min_rounds", 0))
+    if round_index + 1 < min_rounds:
+        return None
+    max_rounds = cfg.get("early_stop_rounds_without_valid_improvement")
+    if max_rounds is not None and rounds_without_valid_improvement >= int(max_rounds):
+        return f"{rounds_without_valid_improvement} rounds without valid-score improvement"
+    max_full = cfg.get("early_stop_full_without_valid_improvement")
+    if max_full is not None and full_without_valid_improvement >= int(max_full):
+        return f"{full_without_valid_improvement} full evals without valid-score improvement"
+    return None
 
 
 def _complete_genome(

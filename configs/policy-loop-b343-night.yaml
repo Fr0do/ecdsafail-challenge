@@ -1,6 +1,6 @@
-output_dir: artifacts/runs/policy-loop-b343-night-v2
+output_dir: artifacts/runs/policy-loop-b343-night-v3
 cache:
-  dir: artifacts/cache-policy-loop-b343-night-v2
+  dir: artifacts/cache-policy-loop-b343-night-v3
 program_db:
   enabled: true
 evaluator:
@@ -11,6 +11,9 @@ seed: 4317
 rounds: 24
 pool_size: 64
 full_evals_per_round: 6
+early_stop_min_rounds: 4
+early_stop_rounds_without_valid_improvement: 3
+early_stop_full_without_valid_improvement: 24
 
 baseline_score: 2479548042
 baseline_proxy_score: 11114242

@@ -41,6 +41,10 @@ Outputs:
 - `summary.json`: best full and best valid result;
 - `programs.sqlite`: queryable run database.
 
+The night config includes an efficiency guard: it stops after enough full
+evaluations fail to improve the best valid score. Proxy-only improvements do not
+count as progress.
+
 For TODD/FastTODD T-count optimization, the same runner shape should wrap a
 VarTODD-style evaluator: proxy = candidate pool reduction estimate, full =
 verified final column count, reward = decreasing function of final T-count.
