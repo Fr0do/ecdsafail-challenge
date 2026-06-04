@@ -1,0 +1,88 @@
+output_dir: artifacts/runs/policy-loop-b343-smoke-v2
+cache:
+  dir: artifacts/cache-policy-loop-b343-smoke-v2
+program_db:
+  enabled: true
+evaluator:
+  version: ecdsa.fail-v1
+  dataset_version: ecdsa.fail-policy-loop
+
+seed: 43
+rounds: 1
+pool_size: 3
+full_evals_per_round: 1
+
+baseline_score: 2479548042
+baseline_proxy_score: 11114242
+score_scale: 100000.0
+proxy_score_scale: 10000.0
+valid_base_reward: 1.0
+invalid_base_reward: 0.02
+worse_valid_score_floor: -0.9
+novelty_weight: 0.1
+
+seed_prior_strength: 2.0
+learning_rate: 0.6
+temperature: 1.25
+mutation_fraction: 0.85
+mutation_hamming_choices: [1, 1]
+local_neighbor_probability: 0.8
+local_neighbor_radius: 1
+force_seed_full_eval: true
+seed_full_bonus: 4.0
+max_full_island_distance: 1
+min_selected_hamming_distance: 1
+proxy_weight: 1.0
+acquisition_novelty_weight: 0.25
+policy_prior_weight: 0.03
+island_distance_penalty: 0.45
+
+fixed_env:
+  DIALOG_GCD_COMPARE_BITS: 57
+  DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS: 19
+  DIALOG_GCD_ACTIVE_ITERATIONS: 395
+  DIALOG_GCD_WIDTH_MARGIN: 26
+  DIALOG_GCD_APPLY_CHUNKED_F_CUT: 124
+  DIALOG_GCD_APPLY_CHUNKED_F_CUT2: 130
+
+budgets:
+  proxy:
+    stage: 1
+    timeout_s: 240
+    max_plans: 0
+    max_judges: 0
+  full:
+    stage: 2
+    timeout_s: 360
+    max_plans: 0
+    max_judges: 0
+
+slots:
+  patch_id:
+    - b343_sm5_1434
+  DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN:
+    - 4
+    - 5
+    - 6
+  DIALOG_REROLL:
+    - 1843
+    - 1844
+    - 1845
+    - 2553
+    - 3532
+  DIALOG_POST_SUB_REROLL:
+    - 2553
+    - 3531
+    - 3532
+    - 3533
+
+mutable_slots:
+  - DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN
+  - DIALOG_REROLL
+  - DIALOG_POST_SUB_REROLL
+
+seed_genomes:
+  - patch_id: b343_sm5_1434
+    DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN: 5
+    DIALOG_REROLL: 1844
+    DIALOG_POST_SUB_REROLL: 3532
