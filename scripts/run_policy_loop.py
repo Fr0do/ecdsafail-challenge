@@ -14,9 +14,11 @@ agentic patch evolution:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -54,6 +56,19 @@ class FullRecord:
     island_distance: int
 
 
+@dataclass
+class LeaderboardPrior:
+    values_by_slot: dict[str, list[int]]
+    sources: list[dict[str, Any]]
+
+
+@dataclass
+class PsoState:
+    ema: dict[str, float]
+    top_genomes: list[dict[str, Any]]
+    prime_values_by_slot: dict[str, list[int]]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("config", type=Path)
@@ -81,6 +96,8 @@ def main() -> None:
 
     rng = random.Random(int(cfg.get("seed", 0)))
     slots: dict[str, list[Any]] = {name: list(values) for name, values in cfg["slots"].items()}
+    leaderboard_prior = _load_leaderboard_prior(project_root, cfg, slots)
+    _augment_slots_with_leaderboard_prior(slots, leaderboard_prior)
     slot_names = list(slots)
     seed_genomes = [
         _complete_genome(dict(seed), slots, slot_names, rng)
@@ -88,10 +105,29 @@ def main() -> None:
     ]
     seed_keys = {_genome_key(seed) for seed in seed_genomes}
     logits = _initial_logits(slots, seed_genomes, float(cfg.get("seed_prior_strength", 1.0)))
+    pso_state = PsoState(
+        ema={},
+        top_genomes=[],
+        prime_values_by_slot=leaderboard_prior.values_by_slot,
+    )
 
     if args.dry_run:
-        pool = _candidate_pool(cfg, slots, slot_names, seed_genomes, logits, rng, seen=set(), round_index=0)
+        pool = _candidate_pool(
+            cfg,
+            slots,
+            slot_names,
+            seed_genomes,
+            logits,
+            rng,
+            seen=set(),
+            round_index=0,
+            full_archive=[],
+            pso_state=pso_state,
+        )
         (output_dir / "dry_pool.json").write_text(json.dumps(pool, indent=2, sort_keys=True))
+        (output_dir / "leaderboard_prior.json").write_text(
+            json.dumps(_leaderboard_prior_dict(leaderboard_prior), indent=2, sort_keys=True)
+        )
         print(f"DRY_POOL {len(pool)} -> {output_dir / 'dry_pool.json'}")
         return
 
@@ -127,6 +163,8 @@ def main() -> None:
                 rng,
                 seen=seen_proxy,
                 round_index=round_index,
+                full_archive=full_archive,
+                pso_state=pso_state,
             )
             round_proxy: list[ProxyRecord] = []
             for genome in pool:
@@ -249,7 +287,17 @@ def main() -> None:
                 invalid_update_weight=float(cfg.get("invalid_update_weight", 0.35)),
                 invalid_credit_mode=str(cfg.get("invalid_credit_mode", "mutated_slots")),
             )
-            _write_policy(output_dir, slots, logits, round_index, proxy_archive, full_archive)
+            _update_pso_state(pso_state, full_archive, slots, slot_names, cfg)
+            _write_policy(
+                output_dir,
+                slots,
+                logits,
+                round_index,
+                proxy_archive,
+                full_archive,
+                pso_state=pso_state,
+                leaderboard_prior=leaderboard_prior,
+            )
             if program_db:
                 full_entries = [(item.candidate, item.result) for item in full_archive]
                 valid_entries = [
@@ -343,6 +391,8 @@ def _candidate_pool(
     *,
     seen: set[str],
     round_index: int,
+    full_archive: list[FullRecord],
+    pso_state: PsoState,
 ) -> list[dict[str, Any]]:
     pool_size = int(cfg.get("pool_size", 16))
     pool: list[dict[str, Any]] = []
@@ -356,12 +406,78 @@ def _candidate_pool(
     attempts = 0
     while len(pool) < pool_size and attempts < max(1000, pool_size * 100):
         attempts += 1
-        if seed_genomes and rng.random() < mutation_fraction:
+        if _pso_enabled(cfg) and full_archive and rng.random() < float(cfg.get("pso", {}).get("fraction", 0.35)):
+            genome = _sample_pso_genome(
+                seed_genomes,
+                slots,
+                slot_names,
+                cfg,
+                rng,
+                pso_state,
+            )
+        elif seed_genomes and rng.random() < mutation_fraction:
             genome = _mutate_seed(seed_genomes, slots, slot_names, cfg, rng)
         else:
             genome = _sample_policy(slots, slot_names, logits, float(cfg.get("temperature", 1.2)), rng)
         _append_unique_genome(pool, genome, seen)
     return pool
+
+
+def _pso_enabled(cfg: dict[str, Any]) -> bool:
+    return bool(cfg.get("pso", {}).get("enabled", False))
+
+
+def _sample_pso_genome(
+    seed_genomes: list[dict[str, Any]],
+    slots: dict[str, list[Any]],
+    slot_names: list[str],
+    cfg: dict[str, Any],
+    rng: random.Random,
+    state: PsoState,
+) -> dict[str, Any]:
+    pso_cfg = cfg.get("pso", {})
+    top = state.top_genomes or seed_genomes
+    if not top:
+        return _sample_policy(slots, slot_names, {name: [0.0 for _ in values] for name, values in slots.items()}, 1.0, rng)
+
+    parent = dict(rng.choice(top[: max(1, min(len(top), int(pso_cfg.get("top_k", 10))))]))
+    best = top[0]
+    genome = dict(parent)
+    mutable = list(cfg.get("mutable_slots", [name for name in slot_names if len(slots[name]) > 1]))
+    inertia = float(pso_cfg.get("inertia", 0.55))
+    cognitive = float(pso_cfg.get("cognitive_weight", 0.25))
+    social = float(pso_cfg.get("social_weight", 0.45))
+    keep_parent_prob = float(pso_cfg.get("keep_parent_probability", 0.25))
+    prime_kick_prob = float(pso_cfg.get("prime_kick_probability", 0.35))
+    prime_kick_weight = float(pso_cfg.get("prime_kick_weight", 0.65))
+    jitter_scale = float(pso_cfg.get("jitter_scale", 0.08))
+
+    for name in mutable:
+        values = slots[name]
+        if len(values) <= 1 or rng.random() < keep_parent_prob:
+            continue
+        if _all_number_like(values):
+            parent_value = float(parent.get(name, rng.choice(values)))
+            best_value = float(best.get(name, parent_value))
+            ema_value = float(state.ema.get(name, parent_value))
+            target = (
+                inertia * parent_value
+                + cognitive * rng.random() * (best_value - parent_value)
+                + social * rng.random() * (ema_value - parent_value)
+            )
+            primes = state.prime_values_by_slot.get(name, [])
+            if primes and rng.random() < prime_kick_prob:
+                target = (1.0 - prime_kick_weight) * target + prime_kick_weight * float(rng.choice(primes))
+            numeric_values = [float(value) for value in values]
+            span = max(max(numeric_values) - min(numeric_values), 1.0)
+            target += rng.gauss(0.0, jitter_scale * span)
+            genome[name] = _nearest_numeric_choice(values, target)
+        else:
+            choices = [best.get(name), parent.get(name)]
+            choices.extend(item.get(name) for item in top[: int(pso_cfg.get("top_k", 10))])
+            choices = [value for value in choices if value in values]
+            genome[name] = rng.choice(choices or values)
+    return _complete_genome(genome, slots, slot_names, rng)
 
 
 def _mutate_seed(
@@ -581,6 +697,272 @@ def _changed_slots_from_nearest_seed(
     return [name for name in slot_names if genome.get(name) != seed.get(name)]
 
 
+def _load_leaderboard_prior(
+    project_root: Path,
+    cfg: dict[str, Any],
+    slots: dict[str, list[Any]],
+) -> LeaderboardPrior:
+    lb_cfg = cfg.get("leaderboard_primes", {})
+    if not isinstance(lb_cfg, dict) or not bool(lb_cfg.get("enabled", False)):
+        return LeaderboardPrior(values_by_slot={}, sources=[])
+
+    notes_dir = project_root / str(
+        lb_cfg.get("notes_dir", "src/point_add/memory/research_graph/commit_notes")
+    )
+    if not notes_dir.exists():
+        return LeaderboardPrior(values_by_slot={}, sources=[])
+
+    metric_re = re.compile(
+        r"Public metric:\s*score\s*([0-9_]+)\s*=\s*([0-9_]+)\s*Toffoli\s*x\s*([0-9_]+)\s*qubits",
+        re.IGNORECASE,
+    )
+    commit_re = re.compile(r"Commit:\s*`([0-9a-fA-F]+)`")
+    submission_re = re.compile(r"Submission:\s*`([^`]+)`")
+    env_re = re.compile(r'set_default_env\("([^"]+)",\s*"(-?\d+)"\)')
+
+    sources: list[dict[str, Any]] = []
+    for path in notes_dir.glob("*.md"):
+        text = path.read_text(errors="replace")
+        metric = metric_re.search(text)
+        if not metric:
+            continue
+        commit = commit_re.search(text)
+        submission = submission_re.search(text)
+        score, toffoli, qubits = [int(value.replace("_", "")) for value in metric.groups()]
+        sources.append(
+            {
+                "file": str(path.relative_to(project_root)),
+                "score": score,
+                "toffoli": toffoli,
+                "qubits": qubits,
+                "commit": commit.group(1) if commit else "",
+                "submission": submission.group(1) if submission else "",
+                "text": text,
+            }
+        )
+
+    sources.sort(key=lambda item: (int(item["score"]), int(item["qubits"]), int(item["toffoli"])))
+    top_sources = sources[: int(lb_cfg.get("top_commits", 10))]
+    target_slots = [
+        str(name)
+        for name in lb_cfg.get("slots", ["DIALOG_REROLL", "DIALOG_POST_SUB_REROLL"])
+        if str(name) in slots
+    ]
+    values_by_slot: dict[str, list[int]] = {name: [] for name in target_slots}
+    max_prime = int(lb_cfg.get("max_prime", 8191))
+    min_prime = int(lb_cfg.get("min_prime", 2))
+    primes_per_commit = int(lb_cfg.get("primes_per_commit", 2))
+    include_explicit = bool(lb_cfg.get("include_explicit_values", True))
+    source_payloads: list[dict[str, Any]] = []
+
+    for rank, source in enumerate(top_sources):
+        explicit_values: dict[str, list[int]] = {}
+        if include_explicit:
+            for env_name, value_text in env_re.findall(str(source["text"])):
+                if env_name not in target_slots:
+                    continue
+                explicit_values.setdefault(env_name, []).append(int(value_text))
+                values_by_slot.setdefault(env_name, []).append(int(value_text))
+
+        derived_primes: dict[str, list[int]] = {}
+        for name in target_slots:
+            for salt in range(max(0, primes_per_commit)):
+                prime = _derive_commit_prime(
+                    commit=str(source.get("commit", "")),
+                    submission=str(source.get("submission", "")),
+                    score=int(source["score"]),
+                    toffoli=int(source["toffoli"]),
+                    qubits=int(source["qubits"]),
+                    slot_name=name,
+                    rank=rank,
+                    salt=salt,
+                    min_prime=min_prime,
+                    max_prime=max_prime,
+                )
+                derived_primes.setdefault(name, []).append(prime)
+                values_by_slot.setdefault(name, []).append(prime)
+
+        source_payloads.append(
+            {
+                "file": source["file"],
+                "score": source["score"],
+                "toffoli": source["toffoli"],
+                "qubits": source["qubits"],
+                "commit": source["commit"],
+                "submission": source["submission"],
+                "explicit_values": {
+                    name: sorted(set(values))
+                    for name, values in explicit_values.items()
+                },
+                "derived_primes": {
+                    name: sorted(set(values))
+                    for name, values in derived_primes.items()
+                },
+            }
+        )
+
+    return LeaderboardPrior(
+        values_by_slot={name: sorted(set(values)) for name, values in values_by_slot.items() if values},
+        sources=source_payloads,
+    )
+
+
+def _augment_slots_with_leaderboard_prior(
+    slots: dict[str, list[Any]],
+    prior: LeaderboardPrior,
+) -> None:
+    for name, values in prior.values_by_slot.items():
+        if name not in slots:
+            continue
+        merged = list(slots[name])
+        existing = {_stringified_choice(value) for value in merged}
+        for value in values:
+            key = _stringified_choice(value)
+            if key not in existing:
+                merged.append(value)
+                existing.add(key)
+        if _all_number_like(merged):
+            slots[name] = sorted({int(value) for value in merged})
+        else:
+            slots[name] = merged
+
+
+def _derive_commit_prime(
+    *,
+    commit: str,
+    submission: str,
+    score: int,
+    toffoli: int,
+    qubits: int,
+    slot_name: str,
+    rank: int,
+    salt: int,
+    min_prime: int,
+    max_prime: int,
+) -> int:
+    if max_prime < 2:
+        return 2
+    lower = max(2, min_prime)
+    upper = max(lower, max_prime)
+    payload = "|".join(
+        [
+            commit,
+            submission,
+            str(score),
+            str(toffoli),
+            str(qubits),
+            slot_name,
+            str(rank),
+            str(salt),
+        ]
+    )
+    digest = hashlib.blake2b(payload.encode("utf-8"), digest_size=8).digest()
+    start = lower + int.from_bytes(digest, "big") % (upper - lower + 1)
+    return _nearest_prime_in_range(start, lower, upper)
+
+
+def _nearest_prime_in_range(start: int, lower: int, upper: int) -> int:
+    start = min(max(start, lower), upper)
+    for delta in range(0, upper - lower + 1):
+        lo = start - delta
+        hi = start + delta
+        if lo >= lower and _is_prime(lo):
+            return lo
+        if hi <= upper and _is_prime(hi):
+            return hi
+    return 2
+
+
+def _is_prime(value: int) -> bool:
+    if value < 2:
+        return False
+    if value == 2:
+        return True
+    if value % 2 == 0:
+        return False
+    limit = int(math.sqrt(value))
+    for divisor in range(3, limit + 1, 2):
+        if value % divisor == 0:
+            return False
+    return True
+
+
+def _all_number_like(values: list[Any]) -> bool:
+    if not values:
+        return False
+    for value in values:
+        if isinstance(value, bool):
+            return False
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def _nearest_numeric_choice(values: list[Any], target: float) -> Any:
+    return min(values, key=lambda value: abs(float(value) - target))
+
+
+def _stringified_choice(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _update_pso_state(
+    state: PsoState,
+    full_archive: list[FullRecord],
+    slots: dict[str, list[Any]],
+    slot_names: list[str],
+    cfg: dict[str, Any],
+) -> None:
+    if not _pso_enabled(cfg) or not full_archive:
+        return
+    pso_cfg = cfg.get("pso", {})
+    top = _top_full_records(full_archive, int(pso_cfg.get("top_k", 10)))
+    if not top:
+        return
+    state.top_genomes = [dict(item.genome) for item in top]
+    beta = float(pso_cfg.get("ema_beta", 0.7))
+    valid_multiplier = float(pso_cfg.get("valid_weight_multiplier", 4.0))
+    rank_decay = float(pso_cfg.get("rank_decay", 0.15))
+
+    for name in slot_names:
+        if name not in slots or not _all_number_like(slots[name]):
+            continue
+        numerator = 0.0
+        denominator = 0.0
+        for rank, item in enumerate(top):
+            if name not in item.genome:
+                continue
+            try:
+                value = float(item.genome[name])
+            except (TypeError, ValueError):
+                continue
+            weight = max(float(item.reward), 1e-9) / (1.0 + rank_decay * rank)
+            if item.result.secondary_scores.get("valid", 0.0) >= 1.0:
+                weight *= valid_multiplier
+            numerator += value * weight
+            denominator += weight
+        if denominator <= 0.0:
+            continue
+        mean_value = numerator / denominator
+        if name in state.ema:
+            state.ema[name] = beta * float(state.ema[name]) + (1.0 - beta) * mean_value
+        else:
+            state.ema[name] = mean_value
+
+
+def _top_full_records(full_archive: list[FullRecord], top_k: int) -> list[FullRecord]:
+    return sorted(full_archive, key=_full_record_sort_key)[: max(1, top_k)]
+
+
+def _full_record_sort_key(item: FullRecord) -> tuple[float, float, float]:
+    scores = item.result.secondary_scores
+    if scores.get("valid", 0.0) >= 1.0 and "score" in scores:
+        return (0.0, float(scores["score"]), -float(item.reward))
+    return (1.0, -float(item.reward), -float(item.result.primary_score))
+
+
 def _write_policy(
     output_dir: Path,
     slots: dict[str, list[Any]],
@@ -588,6 +970,9 @@ def _write_policy(
     round_index: int,
     proxy_archive: list[ProxyRecord],
     full_archive: list[FullRecord],
+    *,
+    pso_state: PsoState | None = None,
+    leaderboard_prior: LeaderboardPrior | None = None,
 ) -> None:
     policy = {}
     for name, values in slots.items():
@@ -601,8 +986,35 @@ def _write_policy(
         "policy": policy,
         "proxy_archive": [_proxy_item_dict(item) for item in proxy_archive],
         "full_archive": [_full_item_dict(item) for item in full_archive],
+        "pso": _pso_state_dict(pso_state) if pso_state else None,
+        "leaderboard_prior": _leaderboard_prior_dict(leaderboard_prior) if leaderboard_prior else None,
     }
     (output_dir / "policy.json").write_text(json.dumps(payload, indent=2, default=str))
+
+
+def _pso_state_dict(state: PsoState | None) -> dict[str, Any]:
+    if state is None:
+        return {}
+    return {
+        "ema": dict(state.ema),
+        "top_genomes": [dict(item) for item in state.top_genomes[:10]],
+        "prime_values_by_slot": {
+            name: list(values)
+            for name, values in state.prime_values_by_slot.items()
+        },
+    }
+
+
+def _leaderboard_prior_dict(prior: LeaderboardPrior | None) -> dict[str, Any]:
+    if prior is None:
+        return {}
+    return {
+        "values_by_slot": {
+            name: list(values)
+            for name, values in prior.values_by_slot.items()
+        },
+        "sources": [dict(item) for item in prior.sources],
+    }
 
 
 def _summary(full_archive: list[FullRecord], proxy_archive: list[ProxyRecord], started: float) -> dict[str, Any]:

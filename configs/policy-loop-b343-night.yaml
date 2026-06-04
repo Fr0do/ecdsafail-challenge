@@ -1,6 +1,6 @@
-output_dir: artifacts/runs/policy-loop-b343-night-v3
+output_dir: artifacts/runs/policy-loop-b343-night-v4
 cache:
-  dir: artifacts/cache-policy-loop-b343-night-v3
+  dir: artifacts/cache-policy-loop-b343-night-v4
 program_db:
   enabled: true
 evaluator:
@@ -42,6 +42,32 @@ proxy_weight: 1.0
 acquisition_novelty_weight: 0.35
 policy_prior_weight: 0.04
 island_distance_penalty: 0.35
+
+leaderboard_primes:
+  enabled: true
+  top_commits: 10
+  primes_per_commit: 2
+  min_prime: 2
+  max_prime: 8191
+  include_explicit_values: true
+  slots:
+    - DIALOG_REROLL
+    - DIALOG_POST_SUB_REROLL
+
+pso:
+  enabled: true
+  fraction: 0.35
+  top_k: 10
+  ema_beta: 0.7
+  inertia: 0.55
+  cognitive_weight: 0.25
+  social_weight: 0.45
+  keep_parent_probability: 0.25
+  prime_kick_probability: 0.35
+  prime_kick_weight: 0.65
+  jitter_scale: 0.08
+  valid_weight_multiplier: 4.0
+  rank_decay: 0.15
 
 fixed_env:
   DIALOG_GCD_COMPARE_BITS: 57
