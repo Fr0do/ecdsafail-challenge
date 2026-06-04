@@ -23,6 +23,8 @@ novelty_weight: 0.1
 
 seed_prior_strength: 2.0
 learning_rate: 0.6
+invalid_credit_mode: mutated_slots
+invalid_update_weight: 0.35
 temperature: 1.25
 mutation_fraction: 0.85
 mutation_hamming_choices: [1, 1]

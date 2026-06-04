@@ -235,7 +235,16 @@ def main() -> None:
                 if program_db:
                     program_db.record_event(event)
 
-            _update_logits(logits, slots, round_full, lr=float(cfg.get("learning_rate", 0.6)))
+            _update_logits(
+                logits,
+                slots,
+                round_full,
+                seed_genomes=seed_genomes,
+                slot_names=slot_names,
+                lr=float(cfg.get("learning_rate", 0.6)),
+                invalid_update_weight=float(cfg.get("invalid_update_weight", 0.35)),
+                invalid_credit_mode=str(cfg.get("invalid_credit_mode", "mutated_slots")),
+            )
             _write_policy(output_dir, slots, logits, round_index, proxy_archive, full_archive)
             if program_db:
                 full_entries = [(item.candidate, item.result) for item in full_archive]
@@ -501,7 +510,11 @@ def _update_logits(
     slots: dict[str, list[Any]],
     scored: list[FullRecord],
     *,
+    seed_genomes: list[dict[str, Any]],
+    slot_names: list[str],
     lr: float,
+    invalid_update_weight: float,
+    invalid_credit_mode: str,
 ) -> None:
     if not scored:
         return
@@ -509,9 +522,28 @@ def _update_logits(
     mean_log_reward = sum(log_rewards) / len(log_rewards)
     for item, log_reward in zip(scored, log_rewards, strict=True):
         advantage = log_reward - mean_log_reward
-        for name, values in slots.items():
+        names = list(slots)
+        if item.result.secondary_scores.get("valid", 0.0) < 1.0:
+            advantage *= invalid_update_weight
+            if invalid_credit_mode == "mutated_slots":
+                names = _changed_slots_from_nearest_seed(item.genome, seed_genomes, slot_names)
+                if not names:
+                    names = list(slots)
+        for name in names:
+            values = slots[name]
             idx = values.index(item.genome[name])
             logits[name][idx] += lr * advantage
+
+
+def _changed_slots_from_nearest_seed(
+    genome: dict[str, Any],
+    seed_genomes: list[dict[str, Any]],
+    slot_names: list[str],
+) -> list[str]:
+    if not seed_genomes:
+        return list(slot_names)
+    seed = min(seed_genomes, key=lambda item: _hamming(genome, item, slot_names))
+    return [name for name in slot_names if genome.get(name) != seed.get(name)]
 
 
 def _write_policy(

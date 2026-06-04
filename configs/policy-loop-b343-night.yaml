@@ -1,6 +1,6 @@
-output_dir: artifacts/runs/policy-loop-b343-night-v1
+output_dir: artifacts/runs/policy-loop-b343-night-v2
 cache:
-  dir: artifacts/cache-policy-loop-b343-night-v1
+  dir: artifacts/cache-policy-loop-b343-night-v2
 program_db:
   enabled: true
 evaluator:
@@ -23,6 +23,8 @@ novelty_weight: 0.12
 
 seed_prior_strength: 1.6
 learning_rate: 0.55
+invalid_credit_mode: mutated_slots
+invalid_update_weight: 0.35
 temperature: 1.45
 mutation_fraction: 0.8
 mutation_hamming_choices: [1, 1, 1, 2, 2]
