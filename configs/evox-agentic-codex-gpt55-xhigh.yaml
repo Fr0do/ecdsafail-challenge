@@ -1,0 +1,26 @@
+output_dir: artifacts/runs/agentic-codex-gpt55-xhigh-v1
+cache:
+  dir: artifacts/cache-agentic-codex-gpt55-xhigh-v1
+evaluator:
+  version: ecdsa.fail-agentic-plan-v7
+  dataset_version: ecdsa.fail-local
+target_prog_slots:
+  - agent_task_id
+evox:
+  population_size: 4
+  generations: 2
+  evaluation_seeds: [0]
+  elite_fraction: 0.5
+  immigrant_fraction: 0.25
+budgets:
+  - name: proxy
+    stage: 0
+    timeout_s: 600
+    max_plans: 1
+    max_judges: 0
+    env_overrides:
+      AGENT_BACKEND: codex
+      AGENT_MODEL: gpt-5.5
+      AGENT_CODEX_REASONING_EFFORT: xhigh
+      AGENT_MODE: plan_only
+      AGENT_NUM_PROPOSALS: 6
