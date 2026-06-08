@@ -9,6 +9,7 @@ linked git worktree, then run the real ecdsa.fail build/eval gate.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -68,61 +69,99 @@ def main() -> None:
     output_dir = project_root / cfg["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "trials").mkdir(parents=True, exist_ok=True)
+    events_path = output_dir / "events.jsonl"
+
+    lock_fh = None
+    if not args.dry_run and bool(cfg.get("single_worker_lock", True)):
+        lock_fh = _acquire_worker_lock(output_dir, cfg, events_path)
+        if lock_fh is None:
+            return
 
     db = sqlite3.connect(output_dir / "patch_eval.sqlite")
-    db.row_factory = sqlite3.Row
-    _init_db(db)
-    events_path = output_dir / "events.jsonl"
-    _append_event(events_path, {"type": "worker_start", "config": str(args.config), "time": _now()})
+    try:
+        db.row_factory = sqlite3.Row
+        _init_db(db)
+        _append_event(events_path, {"type": "worker_start", "config": str(args.config), "time": _now()})
 
-    started = time.monotonic()
-    max_wall_s = float(cfg.get("max_wall_hours", 12.0)) * 3600.0
-    max_trials = int(cfg.get("max_trials", 1))
-    poll_s = float(cfg.get("poll_s", 60.0))
-    stop_file = output_dir / str(cfg.get("stop_file", "STOP"))
-    completed_trials = 0
+        started = time.monotonic()
+        max_wall_s = float(cfg.get("max_wall_hours", 12.0)) * 3600.0
+        max_trials = int(cfg.get("max_trials", 1))
+        poll_s = float(cfg.get("poll_s", 60.0))
+        stop_file = output_dir / str(cfg.get("stop_file", "STOP"))
+        completed_trials = 0
 
-    while completed_trials < max_trials and not _should_stop(started, max_wall_s, stop_file):
-        plans = _collect_plans(project_root, cfg)
-        pending = _pending_plans(db, plans, cfg)
-        if args.dry_run:
-            for plan in pending[: int(cfg.get("top_k", 20))]:
-                print(
-                    f"{plan.score:.1f}\t{plan.task_id}\t{plan.strategy_profile}\t"
-                    f"{plan.prior_id}\t{plan.candidate_id}\t{plan.plan.get('hypothesis', '')}"
-                )
-            break
-        if not pending:
-            _append_event(events_path, {"type": "poll_empty", "plans": len(plans), "time": _now()})
+        while completed_trials < max_trials and not _should_stop(started, max_wall_s, stop_file):
+            plans = _collect_plans(project_root, cfg)
+            pending = _pending_plans(db, plans, cfg)
+            if args.dry_run:
+                for plan in pending[: int(cfg.get("top_k", 20))]:
+                    print(
+                        f"{plan.score:.1f}\t{plan.task_id}\t{plan.strategy_profile}\t"
+                        f"{plan.prior_id}\t{plan.candidate_id}\t{plan.plan.get('hypothesis', '')}"
+                    )
+                break
+            if not pending:
+                _append_event(events_path, {"type": "poll_empty", "plans": len(plans), "time": _now()})
+                if args.once:
+                    break
+                time.sleep(poll_s)
+                continue
+
+            plan = pending[0]
+            trial_id = _next_trial_id(db, plan)
+            _append_event(
+                events_path,
+                {
+                    "type": "trial_start",
+                    "trial_id": trial_id,
+                    "plan_hash": plan.plan_hash,
+                    "candidate_id": plan.candidate_id,
+                    "score": plan.score,
+                    "time": _now(),
+                },
+            )
+            _record_trial_start(db, trial_id, plan, cfg)
+            summary = _run_trial(project_root, output_dir, cfg, trial_id, plan)
+            _record_trial_finish(db, trial_id, summary)
+            _append_event(events_path, {"type": "trial_finish", "trial_id": trial_id, "summary": summary, "time": _now()})
+            completed_trials += 1
             if args.once:
                 break
-            time.sleep(poll_s)
-            continue
+            time.sleep(float(cfg.get("sleep_between_trials_s", 5.0)))
 
-        plan = pending[0]
-        trial_id = _next_trial_id(db, plan)
-        _append_event(
-            events_path,
-            {
-                "type": "trial_start",
-                "trial_id": trial_id,
-                "plan_hash": plan.plan_hash,
-                "candidate_id": plan.candidate_id,
-                "score": plan.score,
-                "time": _now(),
-            },
-        )
-        _record_trial_start(db, trial_id, plan, cfg)
-        summary = _run_trial(project_root, output_dir, cfg, trial_id, plan)
-        _record_trial_finish(db, trial_id, summary)
-        _append_event(events_path, {"type": "trial_finish", "trial_id": trial_id, "summary": summary, "time": _now()})
-        completed_trials += 1
-        if args.once:
-            break
-        time.sleep(float(cfg.get("sleep_between_trials_s", 5.0)))
+        _append_event(events_path, {"type": "worker_exit", "completed_trials": completed_trials, "time": _now()})
+    finally:
+        db.close()
+        if lock_fh is not None:
+            _release_worker_lock(lock_fh)
 
-    _append_event(events_path, {"type": "worker_exit", "completed_trials": completed_trials, "time": _now()})
-    db.close()
+
+def _acquire_worker_lock(output_dir: Path, cfg: dict[str, Any], events_path: Path):
+    lock_name = str(cfg.get("worker_lock_file", "worker.lock"))
+    lock_path = output_dir / lock_name
+    lock_fh = lock_path.open("a+")
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_fh.seek(0)
+        holder = lock_fh.read().strip()
+        payload = {"type": "worker_lock_busy", "lock_path": str(lock_path), "holder": holder, "time": _now()}
+        _append_event(events_path, payload)
+        print(f"worker lock busy: {lock_path}; holder={holder}", file=sys.stderr)
+        lock_fh.close()
+        return None
+    lock_fh.seek(0)
+    lock_fh.truncate()
+    lock_fh.write(json.dumps({"pid": os.getpid(), "time": _now()}, sort_keys=True) + "\n")
+    lock_fh.flush()
+    return lock_fh
+
+
+def _release_worker_lock(lock_fh) -> None:
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_fh.close()
 
 
 def _run_trial(

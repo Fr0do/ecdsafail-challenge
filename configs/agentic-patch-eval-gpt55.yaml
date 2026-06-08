@@ -6,6 +6,8 @@ max_wall_hours: 18
 max_trials: 10
 poll_s: 120
 sleep_between_trials_s: 15
+single_worker_lock: true
+worker_lock_file: worker.lock
 min_plan_score: 90
 top_k: 16
 retry_failed: false

@@ -80,6 +80,11 @@ unseen families get a small novelty bonus. The marathon lineage context includes
 recent `patch_eval.sqlite` outcomes so later agent prompts see actual build/eval
 evidence, not only proxy scores.
 
+The production worker uses a nonblocking `worker.lock` under the output
+directory. A second real worker exits immediately and records
+`worker_lock_busy`; `--dry-run` remains lock-free for queue inspection while the
+long eval lane is active.
+
 Monitor:
 
 ```bash
