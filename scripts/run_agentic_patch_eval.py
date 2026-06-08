@@ -258,29 +258,33 @@ def _run_patcher(
     last_message = trial_dir / "codex-last-message.txt"
     cmd = [
         "codex",
-        "exec",
-        "--config",
-        f"model_reasoning_effort=\"{patcher.get('reasoning_effort', 'high')}\"",
-        "--sandbox",
-        str(patcher.get("sandbox", "workspace-write")),
         "--ask-for-approval",
         "never",
-        "--cd",
-        str(worktree_path),
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--json",
-        "--output-last-message",
-        str(last_message),
-        prompt,
     ]
     if patcher.get("fast_mode", False):
-        cmd[2:2] = ["--enable", "fast_mode"]
+        cmd.extend(["--enable", "fast_mode"])
     model = str(patcher.get("model", ""))
     if model and model not in {"default", "codex-default"}:
-        cmd[2:2] = ["--model", model]
+        cmd.extend(["--model", model])
+    cmd.extend(
+        [
+            "exec",
+            "--config",
+            f"model_reasoning_effort=\"{patcher.get('reasoning_effort', 'high')}\"",
+            "--sandbox",
+            str(patcher.get("sandbox", "workspace-write")),
+            "--cd",
+            str(worktree_path),
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--json",
+            "--output-last-message",
+            str(last_message),
+            prompt,
+        ]
+    )
     (trial_dir / "patcher_command.json").write_text(json.dumps(cmd, indent=2))
     return _run_command(cmd, cwd=worktree_path, timeout=int(patcher.get("timeout_s", 2400)), prefix="patcher", out_dir=trial_dir)
 
