@@ -56,6 +56,7 @@ def main() -> None:
         raise SystemExit("marathon config requires at least one island")
 
     _append_event(events_path, {"type": "marathon_start", "config": str(args.config), "time": _now()})
+    _write_lineage_context(db, context_file, cfg, project_root)
     for cycle in range(max_cycles):
         if _should_stop(started, max_wall_s, stop_file):
             break
@@ -89,7 +90,7 @@ def main() -> None:
             result = _run_evox(project_root, args.evomcp_root, run_config_path, island, run_id)
             summary = _ingest_run(db, project_root, run_config, run_id, cycle, island_index, island)
             _record_run_finish(db, run_id, result.returncode, summary)
-            _write_lineage_context(db, context_file, cfg)
+            _write_lineage_context(db, context_file, cfg, project_root)
             _append_event(
                 events_path,
                 {
@@ -106,7 +107,7 @@ def main() -> None:
                 raise SystemExit(result.returncode)
             time.sleep(float(cfg.get("sleep_between_runs_s", 5.0)))
 
-    _write_lineage_context(db, context_file, cfg)
+    _write_lineage_context(db, context_file, cfg, project_root)
     _append_event(events_path, {"type": "marathon_complete", "time": _now()})
     db.close()
 
@@ -321,7 +322,7 @@ def _ingest_run(
     return {"n_results": n_results, "best_score": best_score, "best_candidate": best_candidate}
 
 
-def _write_lineage_context(db: sqlite3.Connection, path: Path, cfg: dict[str, Any]) -> None:
+def _write_lineage_context(db: sqlite3.Connection, path: Path, cfg: dict[str, Any], project_root: Path) -> None:
     top_n = int(cfg.get("lineage_top_n", 12))
     rows = db.execute(
         """
@@ -352,7 +353,93 @@ def _write_lineage_context(db: sqlite3.Connection, path: Path, cfg: dict[str, An
                 "",
             ]
         )
+    lines.extend(_trusted_feedback_lines(project_root, cfg))
     path.write_text("\n".join(lines))
+
+
+def _trusted_feedback_lines(project_root: Path, cfg: dict[str, Any]) -> list[str]:
+    feedback_cfg = dict(cfg.get("trusted_feedback", {}))
+    if not bool(feedback_cfg.get("enabled", True)):
+        return []
+    db_path = project_root / str(
+        feedback_cfg.get("db_path", "artifacts/runs/agentic-patch-eval-v1/patch_eval.sqlite")
+    )
+    if not db_path.exists():
+        return [
+            "## Trusted Full-Eval Feedback",
+            "- No trusted patch-eval results have been recorded yet.",
+            "",
+        ]
+
+    limit = int(feedback_cfg.get("limit", 12))
+    try:
+        feedback_db = sqlite3.connect(db_path)
+        feedback_db.row_factory = sqlite3.Row
+        rows = feedback_db.execute(
+            """
+            select trial_id, status, plan_score, candidate_id, hypothesis,
+                   task_id, context_profile, strategy_profile, prior_id,
+                   score, score_delta, toffoli, qubits, error, finished_at
+            from trials
+            where status != 'running'
+            order by id desc
+            limit ?
+            """,
+            (limit,),
+        ).fetchall()
+        counts = feedback_db.execute(
+            "select status, count(*) as n from trials group by status order by status"
+        ).fetchall()
+        feedback_db.close()
+    except sqlite3.Error as exc:
+        return [
+            "## Trusted Full-Eval Feedback",
+            f"- Feedback DB exists but could not be read: {exc}",
+            "",
+        ]
+
+    lines = [
+        "## Trusted Full-Eval Feedback",
+        "This section is ground truth from build_circuit/eval_circuit, not proxy scoring.",
+    ]
+    if counts:
+        summary = ", ".join(f"{row['status']}={row['n']}" for row in counts)
+        lines.append(f"- status counts: {summary}")
+    if not rows:
+        lines.extend(["- No finished trusted trials yet.", ""])
+        return lines
+
+    for row in rows:
+        error = _compact_error(str(row["error"] or ""))
+        metric_bits = []
+        for key in ("score", "score_delta", "toffoli", "qubits"):
+            value = row[key]
+            if value is not None:
+                metric_bits.append(f"{key}={value}")
+        metrics = ", ".join(metric_bits) if metric_bits else "no score"
+        lines.append(
+            f"- {row['trial_id']} {row['status']} ({metrics}); "
+            f"profile={row['task_id']}/{row['strategy_profile']}/{row['prior_id']}; "
+            f"hypothesis={_one_line(row['hypothesis'], 180)}; error={error}"
+        )
+    lines.append("")
+    return lines
+
+
+def _compact_error(text: str, limit: int = 180) -> str:
+    if not text:
+        return ""
+    important = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if any(token in stripped.lower() for token in ("failed", "mismatch", "garbage", "qubits", "loaded ops")):
+            important.append(stripped)
+    return _one_line("; ".join(important) if important else text, limit)
+
+
+def _one_line(value: object, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
 
 
 def _append_event(path: Path, payload: dict[str, Any]) -> None:

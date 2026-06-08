@@ -73,6 +73,13 @@ For env-only reroll plans, the worker skips Codex patching and runs the parsed
 `DIALOG_GCD_COMPARE_BITS` / `DIALOG_REROLL` /
 `DIALOG_POST_SUB_REROLL` variants directly in the same trusted gate.
 
+The worker also feeds trusted results back into selection. Invalid or clean but
+non-improving full-eval families, such as repeated compare56/reroll or
+compressed raw-block lifetime plans, receive a soft priority penalty, while
+unseen families get a small novelty bonus. The marathon lineage context includes
+recent `patch_eval.sqlite` outcomes so later agent prompts see actual build/eval
+evidence, not only proxy scores.
+
 Monitor:
 
 ```bash

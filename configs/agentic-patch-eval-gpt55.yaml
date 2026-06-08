@@ -11,6 +11,13 @@ top_k: 16
 retry_failed: false
 cleanup_worktrees: false
 stop_file: STOP
+feedback:
+  enabled: true
+  lookback: 64
+  family_penalty: 8.0
+  max_family_penalty: 32.0
+  new_family_bonus: 3.0
+  negative_sample_penalty: 4.0
 
 source:
   marathon_db: artifacts/runs/agentic-gigaevo-lite-v1/marathon.sqlite

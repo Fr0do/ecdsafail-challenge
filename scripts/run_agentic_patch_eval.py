@@ -778,8 +778,18 @@ def _pending_plans(db: sqlite3.Connection, plans: list[PlanRecord], cfg: dict[st
     min_score = float(cfg.get("min_plan_score", 0.0))
     top_k = int(cfg.get("top_k", len(plans)))
     retry_failed = bool(cfg.get("retry_failed", False))
+    feedback = _feedback_profile(db, cfg)
     pending: list[PlanRecord] = []
-    for plan in plans:
+    ordered = sorted(
+        plans,
+        key=lambda item: (
+            _selection_score(item, feedback, cfg),
+            item.mean_score or 0.0,
+            item.candidate_id,
+        ),
+        reverse=True,
+    )
+    for plan in ordered:
         if plan.score < min_score:
             continue
         row = db.execute(
@@ -799,6 +809,93 @@ def _pending_plans(db: sqlite3.Connection, plans: list[PlanRecord], cfg: dict[st
         if len(pending) >= top_k:
             break
     return pending
+
+
+def _feedback_profile(db: sqlite3.Connection, cfg: dict[str, Any]) -> dict[str, Any]:
+    feedback_cfg = dict(cfg.get("feedback", {}))
+    if not bool(feedback_cfg.get("enabled", True)):
+        return {"families": {}}
+    try:
+        rows = db.execute(
+            """
+            select status, hypothesis, plan_json
+            from trials
+            where status in ('invalid', 'build_failed', 'rejected', 'no_patch', 'docs_only')
+               or (status = 'valid' and coalesce(score_delta, 0) <= 0)
+            order by id desc
+            limit ?
+            """,
+            (int(feedback_cfg.get("lookback", 64)),),
+        ).fetchall()
+    except sqlite3.Error:
+        return {"families": {}}
+
+    families: dict[str, int] = {}
+    for row in rows:
+        text = f"{row['hypothesis'] or ''}\n{row['plan_json'] or ''}"
+        for family in _plan_families_from_text(text):
+            families[family] = families.get(family, 0) + 1
+    return {"families": families}
+
+
+def _selection_score(plan: PlanRecord, feedback: dict[str, Any], cfg: dict[str, Any]) -> float:
+    feedback_cfg = dict(cfg.get("feedback", {}))
+    families = feedback.get("families", {}) if isinstance(feedback.get("families"), dict) else {}
+    penalty_per = float(feedback_cfg.get("family_penalty", 8.0))
+    max_penalty = float(feedback_cfg.get("max_family_penalty", 32.0))
+    text = _plan_text(plan)
+    plan_families = _plan_families_from_text(text)
+    penalty = min(max_penalty, penalty_per * sum(int(families.get(family, 0)) for family in plan_families))
+    novelty_bonus = 0.0
+    if plan_families and not any(families.get(family, 0) for family in plan_families):
+        novelty_bonus += float(feedback_cfg.get("new_family_bonus", 3.0))
+    if "negative sample" in text.lower() or "negative_sample" in text.lower():
+        penalty += float(feedback_cfg.get("negative_sample_penalty", 4.0))
+    return float(plan.score) + novelty_bonus - penalty
+
+
+def _plan_text(plan: PlanRecord) -> str:
+    return "\n".join(
+        [
+            plan.task_id,
+            plan.context_profile,
+            plan.strategy_profile,
+            plan.prior_id,
+            json.dumps(plan.plan, ensure_ascii=False, sort_keys=True),
+        ]
+    )
+
+
+def _plan_families_from_text(text: str) -> set[str]:
+    lowered = text.lower()
+    families: set[str] = set()
+    if (
+        "compare56" in lowered
+        or "compare 56" in lowered
+        or "compare_bits=56" in lowered
+        or "compare_bits\": \"56" in lowered
+        or "pa_compare_bits=56" in lowered
+        or "dialog_gcd_compare_bits=56" in lowered
+    ):
+        families.add("compare56")
+    if "reroll" in lowered:
+        families.add("reroll")
+    if "raw_block" in lowered and ("compressed" in lowered or "terminal" in lowered):
+        families.add("compressed_raw_block_lifetime")
+    if "delay" in lowered and "product" in lowered and "cleanup" in lowered:
+        families.add("delayed_product_cleanup")
+    if "underflow" in lowered or "borrow" in lowered:
+        families.add("underflow_cleanup")
+    if (
+        "phase_garbage_guard" in lowered
+        or "phase guard" in lowered
+        or "phase-garbage guard" in lowered
+        or "phase failure boundary" in lowered
+    ):
+        families.add("phase_garbage")
+    if "route" in lowered or "lifetime" in lowered or "stream" in lowered:
+        families.add("route_lifetime")
+    return families or {"uncategorized"}
 
 
 def _trial_was_env_only(summary_json: str) -> bool:

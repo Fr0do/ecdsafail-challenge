@@ -6,6 +6,10 @@ sleep_between_runs_s: 10
 continue_on_failure: true
 lineage_top_n: 16
 stop_file: STOP
+trusted_feedback:
+  enabled: true
+  db_path: artifacts/runs/agentic-patch-eval-v1/patch_eval.sqlite
+  limit: 12
 
 base_evox:
   output_dir: artifacts/runs/agentic-gigaevo-lite-v1/template
