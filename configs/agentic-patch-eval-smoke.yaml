@@ -23,6 +23,7 @@ patcher:
 evaluator:
   enabled: false
   baseline_score: 2479548042
+  max_env_variants: 3
   allow_prefixes:
     - src/point_add/
   allow_suffixes:

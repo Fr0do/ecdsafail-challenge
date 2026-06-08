@@ -147,6 +147,21 @@ def _run_trial(
     try:
         _create_worktree(project_root, worktree_path, branch, cfg)
         created_worktree = True
+        env_specs = _env_only_specs(plan, cfg)
+        if env_specs:
+            eval_summary = _run_env_only_eval(worktree_path, trial_dir, cfg, trial_id, env_specs)
+            status = _status_from_eval(eval_summary, cfg)
+            return _summary(
+                status,
+                trial_id,
+                plan,
+                branch,
+                worktree_path,
+                [],
+                patcher=CommandResult(0, "env_only", "", 0.0),
+                eval_summary=eval_summary,
+            )
+
         patcher = _run_patcher(worktree_path, trial_dir, cfg, plan, trial_id)
         changed_files = _changed_files(worktree_path)
         (trial_dir / "changed_files.json").write_text(json.dumps(changed_files, indent=2))
@@ -312,6 +327,8 @@ def _run_trusted_eval(worktree_path: Path, trial_dir: Path, cfg: dict[str, Any],
     eval_bin = worktree_path / "target/release/eval_circuit"
     build_env = dict(env)
     build_env["TRACE_PEAK"] = str(evaluator.get("trace_peak", "1"))
+    score_path = worktree_path / "score.json"
+    score_path.unlink(missing_ok=True)
     build = _run_command(
         [str(build_bin)],
         cwd=worktree_path,
@@ -338,7 +355,6 @@ def _run_trusted_eval(worktree_path: Path, trial_dir: Path, cfg: dict[str, Any],
         out_dir=trial_dir,
         env=env,
     )
-    score_path = worktree_path / "score.json"
     score_json: dict[str, Any] = {}
     if score_path.exists():
         shutil.copy2(score_path, trial_dir / "score.json")
@@ -361,6 +377,156 @@ def _run_trusted_eval(worktree_path: Path, trial_dir: Path, cfg: dict[str, Any],
         "eval_metrics": _parse_eval_stdout(eval_run.stdout),
         "commands": {
             "cargo": _command_dict(cargo),
+            "build_circuit": _command_dict(build),
+            "eval_circuit": _command_dict(eval_run),
+        },
+    }
+
+
+def _run_env_only_eval(
+    worktree_path: Path,
+    trial_dir: Path,
+    cfg: dict[str, Any],
+    trial_id: str,
+    env_specs: list[dict[str, str]],
+) -> dict[str, Any]:
+    evaluator = dict(cfg.get("evaluator", {}))
+    env = os.environ.copy()
+    env.update({str(k): str(v) for k, v in dict(evaluator.get("env", {})).items()})
+    build_timeout = int(evaluator.get("build_timeout_s", 900))
+    circuit_timeout = int(evaluator.get("circuit_timeout_s", 900))
+    eval_timeout = int(evaluator.get("eval_timeout_s", 1200))
+    cargo = _run_command(
+        ["cargo", "build", "--release", "--locked", "--bin", "build_circuit", "--bin", "eval_circuit"],
+        cwd=worktree_path,
+        timeout=build_timeout,
+        prefix="cargo",
+        out_dir=trial_dir,
+        env=env,
+    )
+    if cargo.returncode != 0 or cargo.timed_out:
+        return {
+            "valid": False,
+            "env_only": True,
+            "stage": "cargo",
+            "error": _tail(cargo.stderr or cargo.stdout),
+            "commands": {"cargo": _command_dict(cargo)},
+        }
+
+    variants: list[dict[str, Any]] = []
+    for index, spec in enumerate(env_specs):
+        variant_dir = trial_dir / f"env_variant_{index:02d}"
+        variant_dir.mkdir(parents=True, exist_ok=True)
+        variant = _run_eval_variant(
+            worktree_path=worktree_path,
+            out_dir=variant_dir,
+            cfg=cfg,
+            trial_id=f"{trial_id}-v{index:02d}",
+            env_map=spec,
+            circuit_timeout=circuit_timeout,
+            eval_timeout=eval_timeout,
+        )
+        variants.append(variant)
+        if bool(cfg.get("evaluator", {}).get("stop_env_variants_on_improvement", True)):
+            score = _maybe_int(variant.get("score"))
+            baseline = _maybe_int(evaluator.get("baseline_score"))
+            if variant.get("valid") and score is not None and baseline is not None and score < baseline:
+                break
+
+    valid_variants = [item for item in variants if item.get("valid")]
+    best = min(valid_variants, key=lambda item: int(item["score"])) if valid_variants else None
+    if best:
+        return {
+            "valid": True,
+            "env_only": True,
+            "baseline_score": evaluator.get("baseline_score", 2_479_548_042),
+            "stage": "env_eval",
+            "error": "",
+            "score": best.get("score"),
+            "metrics": best.get("metrics", {}),
+            "build_metrics": best.get("build_metrics", {}),
+            "eval_metrics": best.get("eval_metrics", {}),
+            "env": best.get("env", {}),
+            "variants": variants,
+            "commands": {"cargo": _command_dict(cargo)},
+        }
+    return {
+        "valid": False,
+        "env_only": True,
+        "baseline_score": evaluator.get("baseline_score", 2_479_548_042),
+        "stage": "env_eval",
+        "error": _tail("\n\n".join(str(item.get("error", "")) for item in variants if item.get("error"))),
+        "variants": variants,
+        "commands": {"cargo": _command_dict(cargo)},
+    }
+
+
+def _run_eval_variant(
+    *,
+    worktree_path: Path,
+    out_dir: Path,
+    cfg: dict[str, Any],
+    trial_id: str,
+    env_map: dict[str, str],
+    circuit_timeout: int,
+    eval_timeout: int,
+) -> dict[str, Any]:
+    evaluator = dict(cfg.get("evaluator", {}))
+    base_env = os.environ.copy()
+    base_env.update({str(k): str(v) for k, v in dict(evaluator.get("env", {})).items()})
+    base_env.update({str(k): str(v) for k, v in env_map.items()})
+    build_env = dict(base_env)
+    build_env["TRACE_PEAK"] = str(evaluator.get("trace_peak", "1"))
+    build_bin = worktree_path / "target/release/build_circuit"
+    eval_bin = worktree_path / "target/release/eval_circuit"
+    score_path = worktree_path / "score.json"
+    score_path.unlink(missing_ok=True)
+
+    build = _run_command(
+        [str(build_bin)],
+        cwd=worktree_path,
+        timeout=circuit_timeout,
+        prefix="build_circuit",
+        out_dir=out_dir,
+        env=build_env,
+    )
+    if build.returncode != 0 or build.timed_out:
+        return {
+            "valid": False,
+            "env": env_map,
+            "stage": "build_circuit",
+            "error": _tail(build.stderr or build.stdout),
+            "build_metrics": _parse_build_stdout(build.stdout),
+            "commands": {"build_circuit": _command_dict(build)},
+        }
+
+    note = _env_note(trial_id, env_map)
+    eval_run = _run_command(
+        [str(eval_bin), "--note", note],
+        cwd=worktree_path,
+        timeout=eval_timeout,
+        prefix="eval_circuit",
+        out_dir=out_dir,
+        env=base_env,
+    )
+    score_json: dict[str, Any] = {}
+    if score_path.exists():
+        shutil.copy2(score_path, out_dir / "score.json")
+        try:
+            score_json = json.loads(score_path.read_text())
+        except json.JSONDecodeError:
+            score_json = {}
+    valid = eval_run.returncode == 0 and not eval_run.timed_out and bool(score_json)
+    return {
+        "valid": valid,
+        "env": env_map,
+        "stage": "eval_circuit",
+        "error": "" if valid else _tail(eval_run.stderr or eval_run.stdout),
+        "score": score_json.get("score"),
+        "metrics": score_json.get("metrics", {}),
+        "build_metrics": _parse_build_stdout(build.stdout),
+        "eval_metrics": _parse_eval_stdout(eval_run.stdout),
+        "commands": {
             "build_circuit": _command_dict(build),
             "eval_circuit": _command_dict(eval_run),
         },
@@ -401,6 +567,80 @@ Hard constraints:
 Before finishing, run only cheap local checks if useful. Avoid long full evals; the supervisor handles them.
 Return a compact final JSON object with keys: status, summary, changed_files, expected_effect, risk.
 """.strip()
+
+
+def _env_only_specs(plan: PlanRecord, cfg: dict[str, Any]) -> list[dict[str, str]]:
+    text = json.dumps(plan.plan, ensure_ascii=False).lower()
+    allowed_files = [str(item) for item in plan.plan.get("allowed_files", []) or []]
+    env_hint = "env-only" in text or "no rust edit" in text or "no rust" in text
+    only_notes = bool(allowed_files) and all(path.endswith(".md") for path in allowed_files)
+    if not (env_hint or only_notes):
+        return []
+
+    specs: list[dict[str, str]] = []
+    for command in plan.plan.get("eval_commands", []) or []:
+        spec = _env_prefix_from_command(str(command))
+        if _is_reroll_spec(spec):
+            specs.append(spec)
+
+    compare_bits = _first_value(specs, "DIALOG_GCD_COMPARE_BITS")
+    if not compare_bits:
+        compare_match = re.search(r"compare\s*([0-9]{2,3})|cb\s*([0-9]{2,3})", text)
+        compare_bits = next((group for group in compare_match.groups() if group), "") if compare_match else ""
+    for reroll, post_sub in re.findall(r"\b([0-9]{2,5})/([0-9]{2,5})\b", text):
+        if compare_bits:
+            specs.append(
+                {
+                    "DIALOG_GCD_COMPARE_BITS": compare_bits,
+                    "DIALOG_REROLL": reroll,
+                    "DIALOG_POST_SUB_REROLL": post_sub,
+                }
+            )
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for spec in specs:
+        cleaned = {key: str(value) for key, value in spec.items() if key != "TRACE_PEAK"}
+        key = tuple(sorted(cleaned.items()))
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(cleaned)
+    return deduped[: int(cfg.get("evaluator", {}).get("max_env_variants", 6))]
+
+
+def _env_prefix_from_command(command: str) -> dict[str, str]:
+    spec: dict[str, str] = {}
+    for token in command.split():
+        if "=" not in token or token.startswith("./") or token.startswith("cargo"):
+            break
+        key, value = token.split("=", 1)
+        if re.fullmatch(r"[A-Z0-9_]+", key):
+            spec[key] = value.strip("'\"")
+            continue
+        break
+    return spec
+
+
+def _is_reroll_spec(spec: dict[str, str]) -> bool:
+    return bool(
+        spec.get("DIALOG_GCD_COMPARE_BITS")
+        or spec.get("DIALOG_REROLL")
+        or spec.get("DIALOG_POST_SUB_REROLL")
+    )
+
+
+def _first_value(specs: list[dict[str, str]], key: str) -> str:
+    for spec in specs:
+        if spec.get(key):
+            return str(spec[key])
+    return ""
+
+
+def _env_note(trial_id: str, env_map: dict[str, str]) -> str:
+    compare = env_map.get("DIALOG_GCD_COMPARE_BITS", "na")
+    reroll = env_map.get("DIALOG_REROLL", "na")
+    post = env_map.get("DIALOG_POST_SUB_REROLL", "na")
+    return f"patch-eval {trial_id} cb{compare}-r{reroll}-p{post}"
 
 
 def _collect_plans(project_root: Path, cfg: dict[str, Any]) -> list[PlanRecord]:
@@ -543,10 +783,15 @@ def _pending_plans(db: sqlite3.Connection, plans: list[PlanRecord], cfg: dict[st
         if plan.score < min_score:
             continue
         row = db.execute(
-            "select status from trials where plan_hash=? order by id desc limit 1",
+            "select status, summary_json from trials where plan_hash=? order by id desc limit 1",
             (plan.plan_hash,),
         ).fetchone()
         if row and not retry_failed:
+            if _env_only_specs(plan, cfg) and not _trial_was_env_only(row["summary_json"]):
+                pending.append(plan)
+                if len(pending) >= top_k:
+                    break
+                continue
             continue
         if row and retry_failed and row["status"] not in {"patcher_failed", "worker_error"}:
             continue
@@ -554,6 +799,15 @@ def _pending_plans(db: sqlite3.Connection, plans: list[PlanRecord], cfg: dict[st
         if len(pending) >= top_k:
             break
     return pending
+
+
+def _trial_was_env_only(summary_json: str) -> bool:
+    try:
+        summary = json.loads(summary_json or "{}")
+    except json.JSONDecodeError:
+        return False
+    eval_summary = summary.get("eval", {}) if isinstance(summary.get("eval"), dict) else {}
+    return bool(eval_summary.get("env_only"))
 
 
 def _init_db(db: sqlite3.Connection) -> None:

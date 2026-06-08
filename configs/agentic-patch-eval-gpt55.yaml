@@ -34,6 +34,8 @@ evaluator:
   circuit_timeout_s: 900
   eval_timeout_s: 1500
   trace_peak: 1
+  max_env_variants: 6
+  stop_env_variants_on_improvement: true
   allow_prefixes:
     - src/point_add/
   allow_suffixes:

@@ -69,6 +69,10 @@ TRACE_PEAK=1 ./target/release/build_circuit
 ./target/release/eval_circuit --note patch-eval
 ```
 
+For env-only reroll plans, the worker skips Codex patching and runs the parsed
+`DIALOG_GCD_COMPARE_BITS` / `DIALOG_REROLL` /
+`DIALOG_POST_SUB_REROLL` variants directly in the same trusted gate.
+
 Monitor:
 
 ```bash
