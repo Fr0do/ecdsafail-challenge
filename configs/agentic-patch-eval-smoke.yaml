@@ -1,0 +1,38 @@
+name: ecdsa-agentic-patch-eval-smoke
+output_dir: artifacts/runs/agentic-patch-eval-smoke
+worktree_root: /Users/mkurkin/experiments/projects/ecdsafail-patch-smoke-worktrees
+branch_prefix: agentic-patch-eval-smoke/
+max_wall_hours: 1
+max_trials: 1
+poll_s: 1
+min_plan_score: 0
+top_k: 4
+retry_failed: false
+cleanup_worktrees: true
+stop_file: STOP
+
+source:
+  marathon_db: artifacts/runs/agentic-gigaevo-lite-v1/marathon.sqlite
+  trace_globs:
+    - artifacts/runs/agentic-gigaevo-lite-v1/runs/*/traces/*/plan.json
+
+patcher:
+  backend: mock
+  timeout_s: 5
+
+evaluator:
+  enabled: false
+  baseline_score: 2479548042
+  allow_prefixes:
+    - src/point_add/
+  allow_suffixes:
+    - .rs
+    - .md
+  deny_paths:
+    - src/bin/eval_circuit.rs
+    - src/bin/build_circuit.rs
+    - score.json
+    - results.tsv
+    - ops.bin
+    - Cargo.lock
+    - Cargo.toml

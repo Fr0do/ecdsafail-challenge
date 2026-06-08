@@ -1,0 +1,52 @@
+name: ecdsa-agentic-patch-eval
+output_dir: artifacts/runs/agentic-patch-eval-v1
+worktree_root: /Users/mkurkin/experiments/projects/ecdsafail-patch-worktrees
+branch_prefix: agentic-patch-eval/
+max_wall_hours: 18
+max_trials: 10
+poll_s: 120
+sleep_between_trials_s: 15
+min_plan_score: 90
+top_k: 16
+retry_failed: false
+cleanup_worktrees: false
+stop_file: STOP
+
+source:
+  marathon_db: artifacts/runs/agentic-gigaevo-lite-v1/marathon.sqlite
+  trace_globs:
+    - artifacts/runs/agentic-gigaevo-lite-v1/runs/*/traces/*/plan.json
+
+patcher:
+  backend: codex
+  model: gpt-5.5
+  reasoning_effort: high
+  sandbox: workspace-write
+  timeout_s: 3600
+  fast_mode: false
+
+evaluator:
+  enabled: true
+  baseline_score: 2479548042
+  baseline_toffoli: 1729113
+  baseline_qubits: 1434
+  build_timeout_s: 900
+  circuit_timeout_s: 900
+  eval_timeout_s: 1500
+  trace_peak: 1
+  allow_prefixes:
+    - src/point_add/
+  allow_suffixes:
+    - .rs
+    - .md
+  deny_paths:
+    - src/bin/eval_circuit.rs
+    - src/bin/build_circuit.rs
+    - src/lib.rs
+    - src/circuit.rs
+    - src/sim.rs
+    - score.json
+    - results.tsv
+    - ops.bin
+    - Cargo.lock
+    - Cargo.toml

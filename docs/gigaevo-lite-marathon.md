@@ -43,3 +43,44 @@ touch artifacts/runs/agentic-gigaevo-lite-v1/STOP
 
 The supervisor checks `STOP` between island runs. It does not kill an active
 Codex call mid-request.
+
+## Patch Evaluation Worker
+
+The marathon is a hypothesis generator. Promote plans through a separate
+ground-truth worker:
+
+```bash
+screen -dmS ecdsa-patch-eval zsh -lc \
+  'cd /Users/mkurkin/experiments/projects/ecdsafail-challenge && \
+   PYTHONUNBUFFERED=1 \
+   uv run --with pyyaml python scripts/run_agentic_patch_eval.py \
+   configs/agentic-patch-eval-gpt55.yaml \
+   >> artifacts/runs/agentic-patch-eval-v1/worker.log 2>&1'
+```
+
+It polls the marathon SQLite archive plus live trace bundles, creates one
+linked git worktree per candidate under
+`/Users/mkurkin/experiments/projects/ecdsafail-patch-worktrees`, asks Codex to
+apply a narrow patch, then runs:
+
+```bash
+cargo build --release --locked --bin build_circuit --bin eval_circuit
+TRACE_PEAK=1 ./target/release/build_circuit
+./target/release/eval_circuit --note patch-eval
+```
+
+Monitor:
+
+```bash
+tail -f artifacts/runs/agentic-patch-eval-v1/events.jsonl
+sqlite3 artifacts/runs/agentic-patch-eval-v1/patch_eval.sqlite \
+  "select status,count(*) from trials group by status;
+   select status,score_delta,score,toffoli,qubits,trial_id,hypothesis
+   from trials order by coalesce(score_delta,-999999999) desc, id desc limit 10;"
+```
+
+Stop:
+
+```bash
+touch artifacts/runs/agentic-patch-eval-v1/STOP
+```
