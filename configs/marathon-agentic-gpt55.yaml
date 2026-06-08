@@ -1,0 +1,76 @@
+name: ecdsa-gigaevo-lite
+output_dir: artifacts/runs/agentic-gigaevo-lite-v1
+max_wall_hours: 18
+max_cycles: 8
+sleep_between_runs_s: 10
+continue_on_failure: true
+lineage_top_n: 16
+stop_file: STOP
+
+base_evox:
+  output_dir: artifacts/runs/agentic-gigaevo-lite-v1/template
+  cache:
+    dir: artifacts/runs/agentic-gigaevo-lite-v1/template-cache
+  evaluator:
+    version: ecdsa.fail-agentic-plan-v9
+    dataset_version: ecdsa.fail-local
+  target_prog_slots:
+    - agent_task_id
+    - agent_context_profile
+    - agent_strategy_profile
+    - agent_prior_id
+  evox:
+    population_size: 6
+    generations: 2
+    evaluation_seeds: [0]
+    elite_fraction: 0.5
+    immigrant_fraction: 0.35
+  budgets:
+    - name: proxy
+      stage: 0
+      timeout_s: 720
+      max_plans: 1
+      max_judges: 0
+      env_overrides:
+        AGENT_BACKEND: codex
+        AGENT_MODEL: gpt-5.5
+        AGENT_CODEX_REASONING_EFFORT: xhigh
+        AGENT_MODE: plan_only
+        AGENT_NUM_PROPOSALS: 6
+
+islands:
+  - name: xhigh-deep
+    timeout_s: 780
+    run_timeout_s: 5400
+    evox:
+      population_size: 6
+      generations: 2
+      elite_fraction: 0.5
+      immigrant_fraction: 0.35
+    env_overrides:
+      AGENT_CODEX_REASONING_EFFORT: xhigh
+      AGENT_NUM_PROPOSALS: 6
+
+  - name: high-scout
+    timeout_s: 540
+    run_timeout_s: 4200
+    evox:
+      population_size: 8
+      generations: 2
+      elite_fraction: 0.5
+      immigrant_fraction: 0.45
+    env_overrides:
+      AGENT_CODEX_REASONING_EFFORT: high
+      AGENT_NUM_PROPOSALS: 5
+
+  - name: medium-wide
+    timeout_s: 420
+    run_timeout_s: 3600
+    evox:
+      population_size: 8
+      generations: 2
+      elite_fraction: 0.5
+      immigrant_fraction: 0.5
+    env_overrides:
+      AGENT_CODEX_REASONING_EFFORT: medium
+      AGENT_NUM_PROPOSALS: 4

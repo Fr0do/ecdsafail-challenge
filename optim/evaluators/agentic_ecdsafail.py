@@ -87,7 +87,7 @@ REQUIRED_KEYS = {
 class AgenticEcdsaFailEvaluator:
     """Score local LLM mutation plans before expensive Rust evaluation."""
 
-    version = "ecdsa.fail-agentic-plan-v8"
+    version = "ecdsa.fail-agentic-plan-v9"
 
     def __init__(self, project_root: Path = ROOT):
         self.project_root = project_root
@@ -112,6 +112,8 @@ class AgenticEcdsaFailEvaluator:
         context_profile = str(effective.get("agent_context_profile", "balanced"))
         strategy_profile = str(effective.get("agent_strategy_profile", "narrow_patch"))
         prior_id = str(effective.get("agent_prior_id", "v4_pso"))
+        extra_context_file = str(effective.get("AGENT_EXTRA_CONTEXT_FILE", "")).strip()
+        extra_context = _read_extra_context_file(extra_context_file)
         openrouter_route = _resolve_openrouter_route(model, model_lane)
         if backend == "openrouter":
             model = str(openrouter_route["model"])
@@ -125,6 +127,7 @@ class AgenticEcdsaFailEvaluator:
                     "context_profile": context_profile,
                     "strategy_profile": strategy_profile,
                     "prior_id": prior_id,
+                    "extra_context_file": extra_context_file,
                 },
                 indent=2,
                 sort_keys=True,
@@ -138,6 +141,7 @@ class AgenticEcdsaFailEvaluator:
             context_profile=context_profile,
             strategy_profile=strategy_profile,
             prior_id=prior_id,
+            extra_context=extra_context,
         )
         try:
             agent = run_agent_plan(
@@ -255,6 +259,7 @@ def _build_prompt(
     context_profile: str,
     strategy_profile: str,
     prior_id: str,
+    extra_context: str,
 ) -> str:
     proposal_schema = {
         "hypothesis": "one sentence",
@@ -301,6 +306,8 @@ Strategy profile: {strategy_profile}
 {_strategy_profile_text(strategy_profile)}
 Seed prior: {prior_id}
 {_prior_text(prior_id)}
+Marathon lineage context:
+{extra_context or "No prior marathon context supplied."}
 Existing relevant files:
 {_compact_file_context(project_root, ("src/point_add", "src/bin", "configs"))}
 
@@ -392,6 +399,18 @@ def _prior_text(prior_id: str) -> str:
         ),
     }
     return texts.get(prior_id, texts["v4_pso"])
+
+
+def _read_extra_context_file(path_text: str, *, max_chars: int = 8000) -> str:
+    if not path_text:
+        return ""
+    path = Path(path_text)
+    if not path.exists() or not path.is_file():
+        return ""
+    text = path.read_text(errors="replace").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
 
 
 def _normalise_proposals(parsed: dict[str, Any]) -> list[dict[str, Any]]:
