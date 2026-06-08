@@ -831,6 +831,8 @@ def _pending_plans(db: sqlite3.Connection, plans: list[PlanRecord], cfg: dict[st
     for plan in ordered:
         if plan.score < min_score:
             continue
+        if not _plan_policy_compatible(plan, cfg):
+            continue
         row = db.execute(
             "select status, summary_json from trials where plan_hash=? order by id desc limit 1",
             (plan.plan_hash,),
@@ -1120,17 +1122,33 @@ def _write_patch(worktree_path: Path, trial_dir: Path, changed_files: list[str])
 
 
 def _file_policy_error(changed_files: list[str], cfg: dict[str, Any]) -> str:
+    for path in changed_files:
+        error = _path_policy_error(path, cfg)
+        if error:
+            return error
+    return ""
+
+
+def _plan_policy_compatible(plan: PlanRecord, cfg: dict[str, Any]) -> bool:
+    if _env_only_specs(plan, cfg):
+        return True
+    allowed_files = [str(path) for path in plan.plan.get("allowed_files", []) or []]
+    if not allowed_files:
+        return True
+    return any(not _path_policy_error(path, cfg) for path in allowed_files)
+
+
+def _path_policy_error(path: str, cfg: dict[str, Any]) -> str:
     evaluator = dict(cfg.get("evaluator", {}))
     allow_prefixes = tuple(str(item) for item in evaluator.get("allow_prefixes", ["src/point_add/"]))
     allow_suffixes = tuple(str(item) for item in evaluator.get("allow_suffixes", [".rs", ".md"]))
     deny_paths = tuple(str(item) for item in evaluator.get("deny_paths", []))
-    for path in changed_files:
-        if any(path == denied or path.startswith(denied.rstrip("/") + "/") for denied in deny_paths):
-            return f"denied file changed: {path}"
-        if not path.endswith(allow_suffixes):
-            return f"unsupported changed file suffix: {path}"
-        if not any(path.startswith(prefix) for prefix in allow_prefixes):
-            return f"changed file outside allowed prefixes: {path}"
+    if any(path == denied or path.startswith(denied.rstrip("/") + "/") for denied in deny_paths):
+        return f"denied file changed: {path}"
+    if not path.endswith(allow_suffixes):
+        return f"unsupported changed file suffix: {path}"
+    if not any(path.startswith(prefix) for prefix in allow_prefixes):
+        return f"changed file outside allowed prefixes: {path}"
     return ""
 
 

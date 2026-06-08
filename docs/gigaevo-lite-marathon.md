@@ -85,6 +85,11 @@ directory. A second real worker exits immediately and records
 `worker_lock_busy`; `--dry-run` remains lock-free for queue inspection while the
 long eval lane is active.
 
+Before spending a patcher call, the worker prefilters plan `allowed_files`
+against the same allow/deny policy used after patching. Harness-only proposals
+such as `src/bin/eval_circuit.rs` guardrail edits stay in the marathon archive
+but are not promoted to trusted patch evaluation.
+
 Monitor:
 
 ```bash
